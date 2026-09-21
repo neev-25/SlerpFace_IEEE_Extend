@@ -142,7 +142,7 @@ with tab1:
 
     with col_input:
         st.subheader("1. Face Input")
-        input_mode = st.radio("Choose Input Method:", ["Select Preset Sample", "Upload Image File"], horizontal=True)
+        input_mode = st.radio("Choose Input Method:", ["Select Preset Sample", "Upload Image File", "Camera Capture"], horizontal=True)
 
         if input_mode == "Select Preset Sample":
             preset = st.selectbox("Sample Type:", [
@@ -151,10 +151,16 @@ with tab1:
                 "Screen Replay (Phone Display)"
             ])
             img_array = get_synthetic_sample(preset)
-        else:
+        elif input_mode == "Upload Image File":
             uploaded = st.file_uploader("Upload Face Image", type=["jpg", "png", "jpeg"])
             if uploaded:
                 img_array = np.array(Image.open(uploaded).convert("RGB"))
+            else:
+                img_array = get_synthetic_sample("Genuine (Live Human)")
+        else:
+            camera_image = st.camera_input("Capture Face from Camera")
+            if camera_image:
+                img_array = np.array(Image.open(camera_image).convert("RGB"))
             else:
                 img_array = get_synthetic_sample("Genuine (Live Human)")
 
@@ -206,14 +212,30 @@ with tab2:
     c1, c2 = st.columns(2)
     with c1:
         st.markdown("**Face 1 (Enrolled Gallery / Reference)**")
-        t1 = st.selectbox("Sample 1:", ["Genuine (Live Human)", "Print Attack (Paper Photo)", "Screen Replay (Phone Display)"], key="t1")
-        img1 = get_synthetic_sample(t1)
+        input_type_1 = st.radio("Face 1 Input:", ["Preset", "Upload", "Camera"], horizontal=True, key="in1")
+        if input_type_1 == "Preset":
+            t1 = st.selectbox("Sample 1:", ["Genuine (Live Human)", "Print Attack (Paper Photo)", "Screen Replay (Phone Display)"], key="t1")
+            img1 = get_synthetic_sample(t1)
+        elif input_type_1 == "Upload":
+            up1 = st.file_uploader("Upload Face 1", type=["jpg", "png", "jpeg"], key="up1")
+            img1 = np.array(Image.open(up1).convert("RGB")) if up1 else get_synthetic_sample("Genuine (Live Human)")
+        else:
+            cam1 = st.camera_input("Capture Face 1", key="cam1")
+            img1 = np.array(Image.open(cam1).convert("RGB")) if cam1 else get_synthetic_sample("Genuine (Live Human)")
         st.image(img1, width=160)
 
     with c2:
         st.markdown("**Face 2 (Live Probe / Verification)**")
-        t2 = st.selectbox("Sample 2:", ["Genuine (Live Human)", "Print Attack (Paper Photo)", "Screen Replay (Phone Display)"], index=0, key="t2")
-        img2 = get_synthetic_sample(t2)
+        input_type_2 = st.radio("Face 2 Input:", ["Preset", "Upload", "Camera"], horizontal=True, key="in2")
+        if input_type_2 == "Preset":
+            t2 = st.selectbox("Sample 2:", ["Genuine (Live Human)", "Print Attack (Paper Photo)", "Screen Replay (Phone Display)"], index=0, key="t2")
+            img2 = get_synthetic_sample(t2)
+        elif input_type_2 == "Upload":
+            up2 = st.file_uploader("Upload Face 2", type=["jpg", "png", "jpeg"], key="up2")
+            img2 = np.array(Image.open(up2).convert("RGB")) if up2 else get_synthetic_sample("Genuine (Live Human)")
+        else:
+            cam2 = st.camera_input("Capture Face 2", key="cam2")
+            img2 = np.array(Image.open(cam2).convert("RGB")) if cam2 else get_synthetic_sample("Genuine (Live Human)")
         st.image(img2, width=160)
 
     if st.button("🚀 Run Secure Verification", type="primary"):
