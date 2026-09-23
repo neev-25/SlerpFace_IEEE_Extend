@@ -18,5 +18,4 @@ classes and a fixed random seed of 42. These are software-generated examples,
 not physical presentation-attack tests.
 
 Compile `report/main.tex` with IEEEtran in Overleaf or with a local LaTeX
-distribution. Neev Mendapara's and Meet Kapadia's enrollment numbers remain
-`ID pending` until supplied.
+distribution.
