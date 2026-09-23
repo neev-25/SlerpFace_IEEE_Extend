@@ -1,0 +1,95 @@
+{
+  "n_total": 90,
+  "n_each_class": {
+    "BONA_FIDE": 30,
+    "PRINT_ATTACK": 30,
+    "SCREEN_REPLAY": 30
+  },
+  "class_statistics": {
+    "BONA_FIDE": {
+      "mean": 0.9612134097738624,
+      "std_population": 0.02552059775139439,
+      "min": 0.9018453993748058,
+      "max": 1.0,
+      "median": 0.963126629848202
+    },
+    "PRINT_ATTACK": {
+      "mean": 0.49621915950407236,
+      "std_population": 0.02172692259079176,
+      "min": 0.4482205539049187,
+      "max": 0.5434332872663596,
+      "median": 0.49700706160706526
+    },
+    "SCREEN_REPLAY": {
+      "mean": 0.0,
+      "std_population": 0.0,
+      "min": 0.0,
+      "max": 0.0,
+      "median": 0.0
+    }
+  },
+  "confusion_bona_attack_rows_accept_reject_cols": [
+    [
+      30,
+      0
+    ],
+    [
+      0,
+      60
+    ]
+  ],
+  "threshold_sweep": {
+    "0.40": {
+      "bpcer": 0.0,
+      "apcer": 0.5,
+      "acer": 0.25
+    },
+    "0.50": {
+      "bpcer": 0.0,
+      "apcer": 0.15,
+      "acer": 0.075
+    },
+    "0.60": {
+      "bpcer": 0.0,
+      "apcer": 0.0,
+      "acer": 0.0
+    },
+    "0.70": {
+      "bpcer": 0.0,
+      "apcer": 0.0,
+      "acer": 0.0
+    },
+    "0.80": {
+      "bpcer": 0.0,
+      "apcer": 0.0,
+      "acer": 0.0
+    },
+    "0.90": {
+      "bpcer": 0.0,
+      "apcer": 0.0,
+      "acer": 0.0
+    },
+    "0.95": {
+      "bpcer": 0.3,
+      "apcer": 0.0,
+      "acer": 0.15
+    }
+  },
+  "component_means": {
+    "BONA_FIDE": {
+      "frequency_score": 0.9224268195477248,
+      "texture_score": 1.0,
+      "score": 0.9612134097738624
+    },
+    "PRINT_ATTACK": {
+      "frequency_score": 0.5924383190081446,
+      "texture_score": 1.0,
+      "score": 0.49621915950407236
+    },
+    "SCREEN_REPLAY": {
+      "frequency_score": 0.26365157798217786,
+      "texture_score": 0.6113679846941873,
+      "score": 0.0
+    }
+  }
+}
