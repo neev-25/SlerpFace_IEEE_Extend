@@ -1,0 +1,5 @@
+# Vendored sources/notices are integrity-checked against exact upstream bytes.
+# Preserve those bytes on Windows checkouts even with core.autocrlf enabled.
+third_party/** -text
+tests/fixtures/*.png -text
+tests/fixtures/*.jpg -text

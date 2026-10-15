@@ -1,1 +1,9 @@
-dareblopy
+# Demo/runtime versions tested together in the clean Python 3.11 environment.
+# OpenCV 4 provides the required Haar face detector and requires NumPy <2.3.
+# Optional CPU model backend: install requirements-model.txt separately.
+numpy==2.2.6
+scipy==1.17.1
+Pillow==12.3.0
+streamlit==1.63.0
+matplotlib==3.11.1
+opencv-python==4.12.0.88

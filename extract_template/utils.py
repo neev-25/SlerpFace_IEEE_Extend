@@ -3,10 +3,9 @@ import torch
 
 
 def l2_norm(input, axis=1):
-    """l2 normalize
-    """
+    """Normalize embeddings while keeping all-zero outputs finite."""
     norm = torch.norm(input, 2, axis, True)
-    output = torch.div(input, norm)
+    output = torch.div(input, norm.clamp_min(torch.finfo(input.dtype).tiny))
     return output
 
 def process_batch(batch, backbone, device):
@@ -36,7 +35,7 @@ def process_batch(batch, backbone, device):
     return (
         group_features.cpu().detach().numpy(),
         attention_maps.cpu().detach().numpy(),
-        embeddings
+        embeddings.cpu().detach().numpy()
     )
 
 def get_templates(
@@ -63,14 +62,28 @@ def get_templates(
     Returns:
         tuple: (gallery_templates_dict, query_templates_dict)
     """
+    if not isinstance(batch_size, int) or isinstance(batch_size, bool) or batch_size <= 0:
+        raise ValueError('batch_size must be a positive integer')
+    if any(not isinstance(value, int) or isinstance(value, bool) or value <= 0
+           for value in (embedding_size, group_width, group_size)):
+        raise ValueError('embedding_size, group_width and group_size must be positive integers')
+    if len(carray) % 2:
+        raise ValueError('dataset must contain an even number of images (gallery/query pairs)')
+    if tuple(carray.shape[1:]) not in ((3, 112, 112), (3, 224, 224)):
+        raise ValueError('dataset must have shape (N, 3, 112, 112) or (N, 3, 224, 224)')
+    expected_width = carray.shape[-1] // 16
+    if group_width != expected_width:
+        raise ValueError(f'group_width must be {expected_width} for this input size')
+    if not np.isfinite(carray).all():
+        raise ValueError('dataset contains nonfinite image values')
     backbone.eval()
     if device is None:
         device = torch.device(f'cuda:{gpu_ids}' if torch.cuda.is_available() else 'cpu')
     
     # Initialize storage arrays
-    embeddings = np.zeros([len(carray), embedding_size])
-    attention_maps = np.zeros([len(carray), group_width, group_width, 1])
-    group_features = np.zeros([len(carray), group_size, group_width, group_width])
+    embeddings = np.zeros([len(carray), embedding_size], dtype=np.float32)
+    attention_maps = np.zeros([len(carray), group_width, group_width, 1], dtype=np.float32)
+    group_features = np.zeros([len(carray), group_size, group_width, group_width], dtype=np.float32)
     
     # Process all batches including remainder
     with torch.no_grad():
@@ -78,7 +91,7 @@ def get_templates(
         for start in range(0, n, batch_size):
             end = min(start + batch_size, n)
             print("S", end='')
-            batch = torch.tensor(carray[start:end])
+            batch = torch.as_tensor(carray[start:end], dtype=torch.float32)
             
             # Process current batch
             g_feat, a_maps, emb = process_batch(batch, backbone, device)

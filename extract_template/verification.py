@@ -1,90 +1,83 @@
-import os
-import sys
+"""Extract validation-set features with an explicitly provisioned SlerpFace model.
+
+Run from the project root: ``python -m extract_template.verification --help``.
+This exports research features; it does not enroll protected credentials.
+"""
 import argparse
-import numpy as np
-import torch
-from tasks.slerpface.extract_template.utils import get_templates
-from tasks.slerpface.modules.model import SlerpFace
-from tasks.slerpface.extract_template.data_loader import get_val_data_from_folder
+from pathlib import Path
+import sys
 
 
-def parse_args():
-    """Parse command line arguments for template extraction"""
-    parser = argparse.ArgumentParser(description='Template extraction tool for SlerpFace')
-    parser.add_argument('--model_path', default=None, required=True, help='Path to the model checkpoint')
-    parser.add_argument('--backbone', default='IR_18', help='Backbone architecture type')
-    parser.add_argument('--gpu_ids', default='0', help='GPU device IDs')
-    parser.add_argument('--batch_size', default=128, type=int, help='Batch size for template extraction')
-    parser.add_argument('--data_root', default='', required=True, help='Root directory of validation data')
-    parser.add_argument('--output_dir', default='./templates', help='Directory to save extracted templates')
-    return parser.parse_args()
+def parse_args(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--model_path', required=True, help='Compatible model checkpoint path')
+    parser.add_argument('--backbone', default='IR_50',
+                        choices=['IR_18', 'IR_34', 'IR_50', 'IR_100', 'IR_152', 'IR_200'])
+    parser.add_argument('--gpu_ids', default='0', type=int, help='Single nonnegative GPU device index')
+    parser.add_argument('--batch_size', default=128, type=int)
+    parser.add_argument('--data_root', required=True, help='Directory containing val/ annotations and image folders')
+    parser.add_argument('--output_dir', default='./templates', help='Research feature output directory')
+    args = parser.parse_args(argv)
+    if args.batch_size <= 0:
+        parser.error('--batch_size must be greater than zero')
+    if args.gpu_ids < 0:
+        parser.error('--gpu_ids must be nonnegative')
+    return args
 
 
-def main():
-    """Extract templates from face verification datasets (LFW, CFP-FP, AgeDB, CALFW, CPLFW)
-    and save them for later use in face verification tasks.
-    """
-    args = parse_args()
+def _extract(args):
+    checkpoint = Path(args.model_path)
+    if not checkpoint.is_file():
+        raise FileNotFoundError(f'model checkpoint not found: {checkpoint}')
+    if not (Path(args.data_root) / 'val').is_dir():
+        raise FileNotFoundError(f'validation data directory not found: {Path(args.data_root) / "val"}')
+    try:
+        import torch
+    except ModuleNotFoundError as exc:
+        if exc.name == 'torch':
+            raise ImportError(
+                'Template extraction requires PyTorch and the pinned local TFace backbone '
+                'compatible with your checkpoint. See README.md model setup.'
+            ) from exc
+        raise
+    import numpy as np
+    from extract_template.utils import get_templates
+    from extract_template.data_loader import get_val_data_from_folder
+    from modules.model import SlerpFace
 
-    # Auto-detect device (GPU if available, else CPU)
     device = torch.device(f'cuda:{args.gpu_ids}' if torch.cuda.is_available() else 'cpu')
-    print(f"Using device: {device}")
+    print(f'Using device: {device}')
+    model = SlerpFace(input_size=[112, 112],
+                      num_layers=int(args.backbone.split('_')[-1]), group_size=16).to(device)
+    model.load_state_dict(torch.load(checkpoint, weights_only=True, map_location=device))
+    datasets = get_val_data_from_folder(args.data_root)
+    dataset_names = ('LFW', 'CFP', 'AGEDB', 'CPLFW', 'CALFW')
+    if not any(len(data) for data in datasets[:5]):
+        raise ValueError('no image pairs found in validation annotations; no features were written')
 
-    # Initialize SlerpFace model
-    slerp_model = SlerpFace(
-        input_size=[112, 112],
-        num_layers=int(args.backbone.split("_")[-1]),
-        group_size=16
-    ).to(device)
-    slerp_model.load_state_dict(torch.load(args.model_path, weights_only=True, map_location=device))
-
-    # Load validation datasets from image folders
-    lfw, cfp, agedb, cplfw, calfw, \
-    _, _, _, _, _ = get_val_data_from_folder(args.data_root)
-
-    # Model already on correct device
-
-    print("Extracting templates from LFW, cfp, AgeDB, CPLFW...")
-
-    # Define dataset configurations
-    dataset_configs = {
-        'LFW': lfw,
-        'CFP': cfp,
-        'AGEDB': agedb,
-        'CALFW': calfw,
-        'CPLFW': cplfw
-    }
-    
-    # Initialize template storage
-    extracted_templates = {
-        'gallery': {},
-        'query': {}
-    }
-    
-    # Create output directory
-    os.makedirs(args.output_dir, exist_ok=True)
-    
-    # Extract and save templates for each dataset
-    for dataset_name, dataset_data in dataset_configs.items():
-        gallery_templates, query_templates = get_templates(
-            512,
-            args.batch_size,
-            slerp_model,
-            dataset_data,
-            name=dataset_name,
-            gpu_ids=args.gpu_ids,
-            device=device
-        )
-        
-        print(f"{dataset_name} gallery templates shape: {gallery_templates['group_feature'].shape}")
-        
-        # Save extracted templates and attention maps
-        output_prefix = os.path.join(args.output_dir, dataset_name)
-        np.save(f'{output_prefix}_gallery_templates.npy', gallery_templates['group_feature'])
-        np.save(f'{output_prefix}_query_templates.npy', query_templates['group_feature'])
-        np.save(f'{output_prefix}_gallery_attention_map.npy', gallery_templates['attention_map'])
-        np.save(f'{output_prefix}_query_attention_map.npy', query_templates['attention_map'])
+    output = Path(args.output_dir)
+    output.mkdir(parents=True, exist_ok=True)
+    for name, data in zip(dataset_names, datasets[:5]):
+        if not len(data):
+            print(f'Skipping {name}: no image pairs')
+            continue
+        gallery, query = get_templates(512, args.batch_size, model, data,
+                                       name=name, gpu_ids=args.gpu_ids, device=device)
+        for kind, templates in (('gallery', gallery), ('query', query)):
+            np.save(output / f'{name}_{kind}_templates.npy', templates['group_feature'])
+            np.save(output / f'{name}_{kind}_attention_map.npy', templates['attention_map'])
+        print(f'{name}: extracted {len(gallery["group_feature"])} research pairs')
+    return 0
 
 
-if __name__ == "__main__":
-    main()
+def main(argv=None):
+    args = parse_args(argv)
+    try:
+        return _extract(args)
+    except (ImportError, OSError, ValueError, RuntimeError) as exc:
+        print(f'Template extraction unavailable: {exc}', file=sys.stderr)
+        return 2
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

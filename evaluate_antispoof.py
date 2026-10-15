@@ -1,30 +1,15 @@
 """
 evaluate_antispoof.py
 ======================
-Benchmark Evaluation for Presentation Attack Detection (PAD) & SlerpFace Integration.
-Computes standard ISO/IEC 30107-3 Biometric Metrics:
-  - APCER (Attack Presentation Classification Error Rate)
-  - BPCER (Bona Fide Presentation Classification Error Rate)
-  - ACER  (Average Classification Error Rate = (APCER + BPCER) / 2)
-  - ROC / AUC and SlerpFace Verification Accuracy under Attack.
-
-Outputs formatted tables ready for IEEE research papers.
+Evaluate image heuristics on constructed synthetic illustrations only.
+This is a reproducible software demo, not a real presentation-attack or identity
+benchmark, standards evaluation, privacy measurement, or comparison with a paper.
 """
 
-import os
-import sys
+import argparse
 import numpy as np
-from PIL import Image
-
-if hasattr(sys.stdout, "reconfigure"):
-    sys.stdout.reconfigure(encoding="utf-8")
-
-PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
-if PROJECT_ROOT not in sys.path:
-    sys.path.insert(0, PROJECT_ROOT)
 
 from modules.antispoof.detector import AntiSpoofDetector
-from verify_with_antispoof import slerp_encrypt, cosine_similarity
 
 
 def generate_synthetic_benchmark_dataset(num_samples_per_class: int = 25, seed: int = 42):
@@ -34,7 +19,10 @@ def generate_synthetic_benchmark_dataset(num_samples_per_class: int = 25, seed: 
       2. Print Attacks: Halftone dot pattern, low chrominance variance, flat reflectance.
       3. Screen Replay Attacks: Periodic LCD/OLED pixel grid moiré patterns, glare hotspot.
     """
-    np.random.seed(seed)
+    if (not isinstance(num_samples_per_class, int) or isinstance(num_samples_per_class, bool)
+            or num_samples_per_class <= 0):
+        raise ValueError("num_samples_per_class must be a positive integer")
+    rng = np.random.default_rng(seed)
     dataset = []
 
     for i in range(num_samples_per_class):
@@ -45,14 +33,14 @@ def generate_synthetic_benchmark_dataset(num_samples_per_class: int = 25, seed: 
         # 3D convex facial lighting falloff
         radial_light = np.exp(-((x - cx) ** 2 + (y - cy) ** 2) / (2 * 45 ** 2))
         
-        base_r = 180 + np.random.randint(-20, 20)
-        base_g = 135 + np.random.randint(-15, 15)
-        base_b = 105 + np.random.randint(-15, 15)
+        base_r = 180 + rng.integers(-20, 20)
+        base_g = 135 + rng.integers(-15, 15)
+        base_b = 105 + rng.integers(-15, 15)
 
         skin = np.zeros((112, 112, 3), dtype=np.float32)
-        skin[:, :, 0] = base_r * (0.7 + 0.3 * radial_light) + np.random.normal(0, 3.5, (112, 112))
-        skin[:, :, 1] = base_g * (0.7 + 0.3 * radial_light) + np.random.normal(0, 3.0, (112, 112))
-        skin[:, :, 2] = base_b * (0.7 + 0.3 * radial_light) + np.random.normal(0, 2.5, (112, 112))
+        skin[:, :, 0] = base_r * (0.7 + 0.3 * radial_light) + rng.normal(0, 3.5, (112, 112))
+        skin[:, :, 1] = base_g * (0.7 + 0.3 * radial_light) + rng.normal(0, 3.0, (112, 112))
+        skin[:, :, 2] = base_b * (0.7 + 0.3 * radial_light) + rng.normal(0, 2.5, (112, 112))
         bona_fide = np.clip(skin, 0, 255).astype(np.uint8)
 
         dataset.append({
@@ -107,87 +95,62 @@ def generate_synthetic_benchmark_dataset(num_samples_per_class: int = 25, seed: 
     return dataset
 
 
-def evaluate_system(threshold: float = 0.60):
-    detector = AntiSpoofDetector(threshold=threshold)
-    dataset = generate_synthetic_benchmark_dataset(num_samples_per_class=30)
+def evaluate_system(threshold: float = 0.60, *, num_samples_per_class: int = 30,
+                    seed: int = 42) -> dict:
+    """Report only synthetic class disagreements measured by this routine.
 
-    print("=" * 75)
-    print("🔬 RUNNING BENCHMARK EVALUATION (ISO/IEC 30107-3 Standards)")
-    print("=" * 75)
-    print(f"Total Test Presentations: {len(dataset)}")
-    print(f"  - Bona Fide (Genuine Live): {sum(1 for d in dataset if not d['is_spoof'])}")
-    print(f"  - Presentation Attacks:     {sum(1 for d in dataset if d['is_spoof'])} (Print + Screen)")
-    print(f"Liveness Decision Threshold: {threshold:.2f}\n")
-
-    # Metrics collectors
-    bona_fide_scores = []
-    print_scores = []
-    screen_scores = []
-
-    false_accept_prints = 0
-    false_accept_screens = 0
-    false_reject_bona_fide = 0
-
-    total_bona_fide = 0
-    total_prints = 0
-    total_screens = 0
-
+    In particular, no feature extraction, matching, database, or privacy test is
+    run here. Every image is generated from the same simple drawing process.
+    """
+    if not np.isfinite(threshold) or not 0 < threshold < 1:
+        raise ValueError("threshold must be finite and strictly between 0 and 1")
+    detector = AntiSpoofDetector(threshold=threshold, require_face=False)
+    dataset = generate_synthetic_benchmark_dataset(num_samples_per_class, seed)
+    groups = {
+        "BONA_FIDE": {"name": "Synthetic smooth baseline", "scores": [], "disagreements": 0},
+        "PRINT_ATTACK": {"name": "Synthetic print pattern", "scores": [], "disagreements": 0},
+        "SCREEN_REPLAY": {"name": "Synthetic screen pattern", "scores": [], "disagreements": 0},
+    }
     for item in dataset:
-        res = detector.evaluate(item["img"])
-        score = res.liveness_score
+        result = detector.evaluate(item["img"])
+        group = groups[item["label"]]
+        group["scores"].append(float(result.liveness_score))
+        expected_pass = not item["is_spoof"]
+        group["disagreements"] += int(result.is_live != expected_pass)
 
-        if item["label"] == "BONA_FIDE":
-            total_bona_fide += 1
-            bona_fide_scores.append(score)
-            if not res.is_live:
-                false_reject_bona_fide += 1
-        elif item["label"] == "PRINT_ATTACK":
-            total_prints += 1
-            print_scores.append(score)
-            if res.is_live:
-                false_accept_prints += 1
-        elif item["label"] == "SCREEN_REPLAY":
-            total_screens += 1
-            screen_scores.append(score)
-            if res.is_live:
-                false_accept_screens += 1
+    print("SYNTHETIC DEMO: STATIC IMAGE HEURISTIC EVALUATION")
+    print(f"Seed: {seed}; generated images: {len(dataset)}; heuristic threshold: {threshold:.2f}")
+    print("Face-presence check disabled for drawings. No real presentations or identities tested.")
+    print("| Generated class | Samples | Class disagreements | Rate (%) | Mean heuristic score |")
+    print("| :--- | ---: | ---: | ---: | ---: |")
+    results = {}
+    for label, group in groups.items():
+        count = len(group["scores"])
+        rate = group["disagreements"] / count * 100
+        mean = float(np.mean(group["scores"]))
+        results[label] = {"count": count, "disagreements": group["disagreements"],
+                          "disagreement_rate_percent": rate, "mean_heuristic_score": mean}
+        print(f"| {group['name']} | {count} | {group['disagreements']} | {rate:.2f} | {mean:.4f} |")
+    print("These constructed cases do not measure real PAD accuracy, identity verification, "
+          "privacy, standards compliance, or comparative performance.")
+    return {"synthetic_only": True, "authentication_validated": False,
+            "threshold": threshold, "seed": seed, "classes": results}
 
-    # Calculate ISO Error Rates
-    bpcer = (false_reject_bona_fide / total_bona_fide) * 100.0
-    apcer_print = (false_accept_prints / total_prints) * 100.0
-    apcer_screen = (false_accept_screens / total_screens) * 100.0
-    overall_apcer = ((false_accept_prints + false_accept_screens) / (total_prints + total_screens)) * 100.0
-    acer = (overall_apcer + bpcer) / 2.0
 
-    print("📊 PRESENTATION ATTACK DETECTION (PAD) RESULTS:")
-    print("-" * 75)
-    print(f"  • BPCER (Bona Fide Rejection Rate): {bpcer:.2f}%  [{false_reject_bona_fide}/{total_bona_fide}]")
-    print(f"  • APCER - Print Attacks:           {apcer_print:.2f}%  [{false_accept_prints}/{total_prints}]")
-    print(f"  • APCER - Screen Replay Attacks:   {apcer_screen:.2f}%  [{false_accept_screens}/{total_screens}]")
-    print(f"  • Combined APCER (Spoof Acceptance):{overall_apcer:.2f}%")
-    print(f"  • ACER (Average Classification Error): {acer:.2f}%")
-    print("-" * 75)
-    print(f"  • Mean Bona Fide Score:  {np.mean(bona_fide_scores):.4f} ± {np.std(bona_fide_scores):.4f}")
-    print(f"  • Mean Print Spoof Score:{np.mean(print_scores):.4f} ± {np.std(print_scores):.4f}")
-    print(f"  • Mean Screen Spoof Score:{np.mean(screen_scores):.4f} ± {np.std(screen_scores):.4f}")
-
-    # ── SlerpFace Verification & Zero-Leakage Assessment ──────────────────────
-    print("\n🔒 SlerpFace ZERO-LEAKAGE FRONT-END PROTECTION TEST:")
-    print("-" * 75)
-    spoofs_blocked = (total_prints + total_screens) - (false_accept_prints + false_accept_screens)
-    block_rate = (spoofs_blocked / (total_prints + total_screens)) * 100.0
-    print(f"  • Attack Presentations Intercepted at Front-End: {spoofs_blocked}/{total_prints + total_screens} ({block_rate:.1f}%)")
-    print(f"  • Database Protection: 100% of intercepted attacks resulted in ZERO template extraction.")
-    print("=" * 75)
-
-    # Output Markdown Table for IEEE Paper
-    print("\n📝 FORMATTED TABLE FOR IEEE RESEARCH PAPER:\n")
-    print("| System Architecture | Front-End Defense | Back-End Protection | BPCER (%) | APCER (%) | ACER (%) | Privacy Guarantee |")
-    print("| :--- | :--- | :--- | :---: | :---: | :---: | :--- |")
-    print(f"| SlerpFace Alone (AAAI-25) | None (Vulnerable) | Slerp (alpha=0.9) | 0.00 | 100.00 | 50.00 | Database only |")
-    print(f"| **GuardFace (Proposed)** | **Dual-Domain PAD** | **Slerp (alpha=0.9)** | **{bpcer:.2f}** | **{overall_apcer:.2f}** | **{acer:.2f}** | **End-to-End** |")
-    print()
+def main(argv=None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--threshold", type=float, default=0.60)
+    parser.add_argument("--samples-per-class", type=int, default=30)
+    parser.add_argument("--seed", type=int, default=42)
+    args = parser.parse_args(argv)
+    if args.seed < 0:
+        parser.error("--seed must be non-negative")
+    try:
+        evaluate_system(args.threshold, num_samples_per_class=args.samples_per_class, seed=args.seed)
+    except (ValueError, OSError, RuntimeError) as exc:
+        parser.error(str(exc))
+    return 0
 
 
 if __name__ == "__main__":
-    evaluate_system()
+    raise SystemExit(main())

@@ -1,0 +1,69 @@
+name: Research regression checks
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTEST_DISABLE_PLUGIN_AUTOLOAD: "1"
+      STREAMLIT_BROWSER_GATHER_USAGE_STATS: "false"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+      - name: Bootstrap verified packaging tools
+        run: python -m pip install --require-hashes -r requirements-bootstrap.txt
+      - name: Install locked Windows Python 3.11 environment
+        run: python -m pip install --require-hashes -r requirements-windows-py311.lock.txt
+      - name: Provision pinned pretrained face and presentation models
+        shell: pwsh
+        run: |
+          python -B scripts/provision_face_models.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -B scripts/provision_pad_model.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Runtime capabilities and CPU model imports
+        shell: pwsh
+        run: |
+          python -B scripts/check_runtime.py --require-prototype --require-presentation
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -B -c "import torch; from modules.model import SlerpFace; print(torch.__version__)"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Audit installed dependencies
+        run: python -m pip_audit --strict --progress-spinner off
+      - name: Lint
+        run: python -m ruff check --no-cache .
+      - name: Regressions
+        run: python -B -m pytest -p no:cacheprovider --basetemp "${{ runner.temp }}/guardface-tests" -q
+      - name: Synthetic evaluation smoke check
+        run: python -B evaluate_antispoof.py --samples-per-class 3
+      - name: Report generation smoke check
+        run: python -B generate_report_images.py --demo --out "${{ runner.temp }}/guardface-report"
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          package-manager-cache: false
+      - name: Install isolated browser test tooling
+        shell: pwsh
+        run: |
+          $browserTools = Join-Path $env:RUNNER_TEMP "guardface-browser-tools"
+          npm install --prefix $browserTools --no-package-lock --ignore-scripts playwright@1.62.1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & (Join-Path $browserTools "node_modules/.bin/playwright.cmd") install chromium
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Browser interaction and responsive checks
+        shell: pwsh
+        run: |
+          $env:NODE_PATH = Join-Path $env:RUNNER_TEMP "guardface-browser-tools/node_modules"
+          node scripts/browser_checks.cjs --python python --out "${{ runner.temp }}/guardface-browser-results"

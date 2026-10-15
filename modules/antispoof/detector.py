@@ -1,165 +1,110 @@
-"""
-modules/antispoof/detector.py
-==============================
-Main Presentation Attack Detection (PAD) Detector.
-Fuses Frequency Domain (FFT/Moiré) and Spatial Texture/Color Domain (LBP/YCrCb)
-cues into a robust, real-time liveness verdict.
-"""
+"""Bounded static-image PAD heuristics, not a validated liveness detector."""
 
-from dataclasses import dataclass
-from typing import Dict, Any, Union
+from dataclasses import asdict, dataclass
+import threading
+
 import numpy as np
 from PIL import Image
 
+from modules.image_input import load_rgb_image
 from .frequency_analysis import analyze_frequency
 from .texture_analysis import analyze_texture
+
+_thread_state = threading.local()
+ANALYSIS_SIZE = (112, 112)
+
+
+class FaceDetectionUnavailable(RuntimeError):
+    """The face-presence dependency is unavailable; never silently bypass it."""
+
+
+def _detect_faces(image):
+    try:
+        import cv2
+    except ImportError as exc:
+        raise FaceDetectionUnavailable("Face presence checks need opencv-python; synthetic mode must be explicitly selected.") from exc
+    if not all(hasattr(cv2, name) for name in ("CascadeClassifier", "data", "cvtColor", "COLOR_RGB2GRAY")):
+        raise FaceDetectionUnavailable("OpenCV face-presence support is incomplete; install a compatible full opencv-python build.")
+    if not hasattr(cv2.data, "haarcascades"):
+        raise FaceDetectionUnavailable("OpenCV's face-presence cascade data is missing.")
+    if not hasattr(_thread_state, "cascade"):
+        cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
+        if cascade.empty():
+            raise FaceDetectionUnavailable("OpenCV's face-presence cascade is missing.")
+        _thread_state.cascade = cascade
+    preview = image.copy()
+    preview.thumbnail((640, 640), Image.Resampling.BILINEAR)
+    gray = cv2.cvtColor(np.asarray(preview), cv2.COLOR_RGB2GRAY)
+    boxes = _thread_state.cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(24, 24))
+    sx, sy = image.width / preview.width, image.height / preview.height
+    return [(int(x * sx), int(y * sy), int((x + w) * sx), int((y + h) * sy)) for x, y, w, h in boxes]
 
 
 @dataclass
 class AntiSpoofResult:
-    """Detailed evaluation result from the AntiSpoofDetector."""
+    # Compatibility field: only means a heuristic pass, never verified liveness.
     is_live: bool
-    liveness_score: float  # [0.0, 1.0], higher = more confident real human
-    verdict: str           # "GENUINE (Live Face)", "SCREEN_REPLAY", "PRINT_ATTACK"
-    risk_level: str        # "LOW", "MEDIUM", "CRITICAL"
-    confidence: float      # [0.0, 1.0]
-    diagnostics: Dict[str, Any]
+    liveness_score: float
+    verdict: str
+    risk_level: str
+    confidence: float
+    diagnostics: dict
     summary_text: str
+    authentication_eligible: bool = False
 
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "is_live": self.is_live,
-            "liveness_score": round(self.liveness_score, 4),
-            "verdict": self.verdict,
-            "risk_level": self.risk_level,
-            "confidence": round(self.confidence, 4),
-            "summary_text": self.summary_text,
-            "diagnostics": {
-                k: round(v, 4) if isinstance(v, (float, np.floating)) else v
-                for k, v in self.diagnostics.items()
-            },
-        }
+    def to_dict(self):
+        result = asdict(self)
+        result["heuristic_passed"] = self.is_live
+        result["assurance"] = "Unvalidated static-image heuristic; not proof of liveness."
+        return result
 
 
 class AntiSpoofDetector:
-    """
-    Two-tier Presentation Attack Detector:
-    1. Frequency analysis: Screen pixel grids, moiré interference, high-frequency energy.
-    2. Texture/Color analysis: LBP entropy, skin chrominance variance, specular reflection.
-    """
+    def __init__(self, threshold=0.60, freq_weight=0.50, texture_weight=0.50,
+                 *, require_face=True):
+        values = (threshold, freq_weight, texture_weight)
+        if not all(np.isfinite(v) for v in values) or not 0 < threshold < 1:
+            raise ValueError("Heuristic threshold must be finite and strictly between 0 and 1.")
+        if min(freq_weight, texture_weight) < 0 or not np.isclose(freq_weight + texture_weight, 1):
+            raise ValueError("Frequency and texture weights must be nonnegative and sum to one.")
+        self.threshold = float(threshold)
+        self.freq_weight, self.texture_weight = float(freq_weight), float(texture_weight)
+        self.require_face = require_face
 
-    def __init__(
-        self,
-        threshold: float = 0.60,
-        freq_weight: float = 0.50,
-        texture_weight: float = 0.50,
-    ):
-        self.threshold = threshold
-        self.freq_weight = freq_weight
-        self.texture_weight = texture_weight
+    def _prepare_image(self, img_input):
+        return np.asarray(load_rgb_image(img_input, size=ANALYSIS_SIZE), dtype=np.uint8)
 
-    def _prepare_image(self, img_input: Union[str, np.ndarray, Image.Image]) -> np.ndarray:
-        """Converts filepath, PIL Image, or array to RGB NumPy uint8 array."""
-        if isinstance(img_input, str):
-            pil_img = Image.open(img_input).convert("RGB")
-            return np.array(pil_img, dtype=np.uint8)
-        elif isinstance(img_input, Image.Image):
-            return np.array(img_input.convert("RGB"), dtype=np.uint8)
-        elif isinstance(img_input, np.ndarray):
-            if img_input.dtype != np.uint8:
-                if img_input.max() <= 1.0:
-                    img_input = (img_input * 255).astype(np.uint8)
-                else:
-                    img_input = img_input.astype(np.uint8)
-            if img_input.ndim == 2:
-                img_input = np.stack([img_input] * 3, axis=2)
-            elif img_input.ndim == 3 and img_input.shape[2] == 4:
-                img_input = img_input[:, :, :3]
-            return img_input
-        else:
-            raise ValueError(f"Unsupported image input type: {type(img_input)}")
-
-    def evaluate(self, img_input: Union[str, np.ndarray, Image.Image]) -> AntiSpoofResult:
-        """
-        Evaluates an image for presentation attack indicators.
-        Returns an AntiSpoofResult dataclass.
-        """
-        img_rgb = self._prepare_image(img_input)
-
-        # 1. Extract frequency domain metrics
-        freq_res = analyze_frequency(img_rgb)
-
-        # 2. Extract spatial texture and color metrics
-        tex_res = analyze_texture(img_rgb)
-
-        # 3. Fuse scores
-        base_score = (
-            self.freq_weight * freq_res["freq_liveness_score"] +
-            self.texture_weight * tex_res["texture_liveness_score"]
-        )
-
-        # Additional specific penalty heuristics
+    def evaluate(self, img_input):
+        image = load_rgb_image(img_input)
+        diagnostics = {"liveness_threshold": self.threshold, "analysis_width": 112,
+                       "analysis_height": 112, "face_check_enabled": self.require_face,
+                       "freq_liveness_score": 0.0, "texture_liveness_score": 0.0,
+                       "moire_score": 0.0, "high_freq_ratio": 0.0, "lbp_entropy": 0.0,
+                       "chrominance_diversity": 0.0, "glare_ratio": 0.0}
+        if self.require_face:
+            boxes = _detect_faces(image)
+            diagnostics["face_count"] = len(boxes)
+            if len(boxes) != 1:
+                return AntiSpoofResult(False, 0.0, "NO_FACE" if not boxes else "MULTIPLE_FACES",
+                                       "REJECTED", 0.0, diagnostics,
+                                       "Exactly one detectable face is required; extraction has not run.")
+            image = image.crop(boxes[0])
+        rgb = np.asarray(image.resize(ANALYSIS_SIZE, Image.Resampling.BILINEAR))
+        freq, texture = analyze_frequency(rgb), analyze_texture(rgb)
+        base = self.freq_weight * freq["freq_liveness_score"] + self.texture_weight * texture["texture_liveness_score"]
         penalty = 0.0
-        # Critical screen trigger: strong periodic moire + specular glare
-        if freq_res["moire_score"] > 0.70 and tex_res["glare_ratio"] > 0.02:
+        if freq["moire_score"] > 0.70 and texture["glare_ratio"] > 0.02:
             penalty += 0.35
-
-        # Critical print trigger: low texture entropy + restricted chrominance
-        if tex_res["lbp_entropy"] < 6.2 and tex_res["chrominance_diversity"] < 7.0:
+        if texture["lbp_entropy"] < 6.2 and texture["chrominance_diversity"] < 7:
             penalty += 0.30
-
-        final_liveness = float(np.clip(base_score - penalty, 0.0, 1.0))
-        is_live = final_liveness >= self.threshold
-
-        # Determine verdict and attack type
-        if is_live:
-            verdict = "GENUINE (Live Human Face)"
-            risk_level = "LOW"
-            summary = (
-                f"Passed liveness check (Score: {final_liveness:.2f} >= {self.threshold:.2f}). "
-                f"Natural 3D skin texture and regular frequency decay detected."
-            )
-        else:
-            risk_level = "CRITICAL"
-            # Diagnose primary spoof mechanism
-            if freq_res["moire_score"] > 0.60 or tex_res["glare_ratio"] > 0.03:
-                verdict = "SCREEN_REPLAY (Digital Monitor / Phone Screen)"
-                summary = (
-                    f"Spoof detected! Screen pixel grid interference / moiré pattern found "
-                    f"(Moiré Score: {freq_res['moire_score']:.2f}, Glare: {tex_res['glare_ratio'] * 100:.1f}%)."
-                )
-            elif tex_res["lbp_entropy"] < 6.4 or freq_res["high_freq_ratio"] < 0.09:
-                verdict = "PRINT_ATTACK (Printed Photo / Paper Replay)"
-                summary = (
-                    f"Spoof detected! Paper printing texture / low chrominance diversity found "
-                    f"(LBP Entropy: {tex_res['lbp_entropy']:.2f}, High-Freq: {freq_res['high_freq_ratio']:.2f})."
-                )
-            else:
-                verdict = "UNKNOWN_SPOOF (Synthetic or Mask Attack)"
-                summary = (
-                    f"Spoof detected! Abnormal facial micro-texture profile (Score: {final_liveness:.2f})."
-                )
-
-        confidence = float(abs(final_liveness - self.threshold) / max(self.threshold, 1.0 - self.threshold))
-        confidence = float(np.clip(confidence, 0.0, 1.0))
-
-        diagnostics = {
-            "liveness_threshold": self.threshold,
-            "freq_liveness_score": freq_res["freq_liveness_score"],
-            "texture_liveness_score": tex_res["texture_liveness_score"],
-            "moire_score": freq_res["moire_score"],
-            "high_freq_ratio": freq_res["high_freq_ratio"],
-            "lbp_entropy": tex_res["lbp_entropy"],
-            "chrominance_diversity": tex_res["chrominance_diversity"],
-            "glare_ratio": tex_res["glare_ratio"],
-        }
-
-        return AntiSpoofResult(
-            is_live=is_live,
-            liveness_score=final_liveness,
-            verdict=verdict,
-            risk_level=risk_level,
-            confidence=confidence,
-            diagnostics=diagnostics,
-            summary_text=summary,
-        )
+        score = float(np.clip(base - penalty, 0, 1))
+        passed = score >= self.threshold
+        verdict = "HEURISTIC_PASS" if passed else "HEURISTIC_REJECT"
+        for key in diagnostics:
+            if key in freq:
+                diagnostics[key] = float(freq[key])
+            elif key in texture:
+                diagnostics[key] = float(texture[key])
+        return AntiSpoofResult(passed, score, verdict, "UNVERIFIED" if passed else "REJECTED",
+                               0.0, diagnostics,
+                               f"Static-image heuristic score {score:.3f}; liveness and identity remain unverified.")

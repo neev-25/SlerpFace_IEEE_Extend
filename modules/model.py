@@ -1,25 +1,31 @@
 # based on:
 # https://github.com/ZhaoJ9014/face.evoLVe.PyTorch/blob/master/backbone/model_irse.py
+# Derived from Tencent/TFace SlerpFace at 171ec1434aca0972e111663ac646c9c1e3e44b5b.
+# Upstream license/attribution: third_party/tface/License.txt and LICENSE.face-evoLVe.txt.
+# Locally modified: validation, stable normalization, deep channels, initialization,
+# and the explicit pinned-backbone import; see docs/THIRD_PARTY_NOTICES.md.
+import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.nn import (Linear, Conv2d, BatchNorm1d, BatchNorm2d, 
-                      PReLU, Dropout, MaxPool2d, Sequential, Module
-)
-
-from torchkit.backbone.common import initialize_weights, Flatten, SEModule
-from torchkit.backbone.model_irse import (
+from third_party.tface.torchkit.backbone.common import initialize_weights, Flatten
+from third_party.tface.torchkit.backbone.model_irse import (
     BasicBlockIR, BottleneckIR, BasicBlockIRSE, BottleneckIRSE, get_blocks
 )
 
 def normal_init(m, mean, std):
     if isinstance(m, (nn.ConvTranspose2d, nn.Conv2d)):
         m.weight.data.normal_(mean, std)
-        m.bias.data.zero_()
+        if m.bias is not None:
+            m.bias.data.zero_()
 
 class XCosAttention(nn.Module):
     def __init__(self, group_size, use_softmax=True, softmax_t=1, chw2hwc=True):
         super(XCosAttention, self).__init__()
+        if not isinstance(group_size, int) or isinstance(group_size, bool) or group_size <= 0:
+            raise ValueError('group_size must be a positive integer')
+        if not math.isfinite(softmax_t) or softmax_t <= 0:
+            raise ValueError('softmax_t must be finite and greater than zero')
         self.embedding_net = nn.Sequential(
             nn.Conv2d(group_size, group_size, 3, padding=1),
             nn.BatchNorm2d(group_size),
@@ -37,13 +43,20 @@ class XCosAttention(nn.Module):
         self.chw2hwc = chw2hwc
 
     def softmax(self, x, T=1):
-        x /= T
-        return F.softmax(x.reshape(x.size(0), x.size(1), -1), 2).view_as(x)
+        if not math.isfinite(T) or T <= 0:
+            raise ValueError('temperature must be finite and greater than zero')
+        return F.softmax((x / T).reshape(x.size(0), x.size(1), -1), 2).view_as(x)
 
     def divByNorm(self, x):
-        x -= x.view(x.size(0), x.size(1), -1).min(dim=2)[0].repeat(1, 1, x.size(2) * x.size(3)).view(x.size(0), x.size(1), x.size(2), x.size(3))
-        x /= x.view(x.size(0), x.size(1), -1).sum(dim=2).repeat(1, 1, x.size(2) * x.size(3)).view(x.size(0), x.size(1), x.size(2), x.size(3))
-        return x
+        shifted = x - x.amin(dim=(2, 3), keepdim=True)
+        total = shifted.sum(dim=(2, 3), keepdim=True)
+        # A constant map contains no preference: use uniform attention, without
+        # mutating the caller's tensor or dividing by zero.
+        return torch.where(
+            total > 0,
+            shifted / total.clamp_min(torch.finfo(x.dtype).tiny),
+            torch.full_like(x, 1.0 / (x.size(2) * x.size(3))),
+        )
 
     def forward(self, feat_grid):
         proj_embed = self.embedding_net(feat_grid)
@@ -57,15 +70,20 @@ class XCosAttention(nn.Module):
         return attention_weights
 
     def weight_init(self, mean, std):
-        for m in self._modules:
-            normal_init(self._modules[m], mean, std)
+        self.apply(lambda module: normal_init(module, mean, std))
 
 class SlerpFace(nn.Module):
     def __init__(self, input_size, num_layers, mode='ir', group_size=16):
         super(SlerpFace, self).__init__()
-        assert input_size[0] in [112, 224], "input_size should be [112, 112] or [224, 224]"
-        assert num_layers in [18, 34, 50, 100, 152, 200], "num_layers should be 18, 34, 50, 100 or 152"
-        assert mode in ['ir', 'ir_se'], "mode should be ir or ir_se"
+        if tuple(input_size) not in ((112, 112), (224, 224)):
+            raise ValueError('input_size must be [112, 112] or [224, 224]')
+        if num_layers not in [18, 34, 50, 100, 152, 200]:
+            raise ValueError('num_layers must be 18, 34, 50, 100, 152 or 200')
+        if mode not in ['ir', 'ir_se']:
+            raise ValueError('mode must be ir or ir_se')
+        if not isinstance(group_size, int) or isinstance(group_size, bool) or group_size <= 0:
+            raise ValueError('group_size must be a positive integer')
+        self.input_size = tuple(input_size)
 
         # 初始化输入层
         self.input_layer = nn.Sequential(
@@ -110,7 +128,7 @@ class SlerpFace(nn.Module):
 
         # Xcos module
         self.group_cov = nn.Sequential(
-            nn.Conv2d(512, group_size, (1, 1), 1, 0),
+            nn.Conv2d(output_channel, group_size, (1, 1), 1, 0),
             nn.BatchNorm2d(group_size),
             nn.PReLU(group_size)
         )
@@ -120,6 +138,8 @@ class SlerpFace(nn.Module):
         initialize_weights(self.modules())
 
     def get_body_output(self, x):
+        if x.ndim != 4 or tuple(x.shape[1:]) != (3, *self.input_size):
+            raise ValueError(f'input must have shape (N, 3, {self.input_size[0]}, {self.input_size[1]})')
         x = self.input_layer(x)
         return self.body(x)
 
@@ -139,9 +159,7 @@ class SlerpFace(nn.Module):
         return self.group_attention(x)
 
     def gen_vector_feature(self, x):
-        x = self.input_layer(x)
-        x = self.body(x)
-        return self.output_layer(x)
+        return self.output_layer(self.get_body_output(x))
 
     def gen_group_feature(self, x, flip=True):
         x_body = self.get_body_output(x)
@@ -154,11 +172,12 @@ class SlerpFace(nn.Module):
         return x_cov
 
 if __name__ == "__main__":
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     backbone = SlerpFace(
         input_size=[112, 112],
         num_layers=50,
         group_size=16
-    ).cuda()
-    x = torch.randn(1, 3, 112, 112).cuda()
+    ).to(device).eval()
+    x = torch.randn(1, 3, 112, 112, device=device)
     group_feature = backbone.gen_group_feature(x)
     print(group_feature.shape)

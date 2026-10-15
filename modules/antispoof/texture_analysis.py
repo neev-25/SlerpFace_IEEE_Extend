@@ -20,6 +20,10 @@ def compute_lbp(img_gray: np.ndarray, radius: int = 1) -> np.ndarray:
     Fast vectorized implementation using NumPy slices.
     """
     h, w = img_gray.shape
+    if not isinstance(radius, int) or radius < 1 or min(h, w) <= 2 * radius:
+        raise ValueError("LBP requires a positive integer radius and an image larger than twice that radius.")
+    if not np.isfinite(img_gray).all():
+        raise ValueError("LBP input pixels must be finite.")
     lbp = np.zeros((h - 2 * radius, w - 2 * radius), dtype=np.uint8)
     center = img_gray[radius:-radius, radius:-radius]
 
@@ -48,6 +52,8 @@ def compute_lbp_entropy(lbp_map: np.ndarray) -> float:
     Natural human skin exhibits rich, balanced micro-texture entropy.
     Overly smooth masks or flat screens yield lower texture entropy.
     """
+    if not lbp_map.size:
+        return 0.0
     hist, _ = np.histogram(lbp_map.ravel(), bins=256, range=(0, 256), density=True)
     hist = hist[hist > 0]
     entropy = -np.sum(hist * np.log2(hist))

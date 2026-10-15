@@ -1,44 +1,61 @@
-# GuardFace Execution Helper for Windows PowerShell
+# GuardFace launcher. Paths are rooted at this script, independent of caller CWD.
 param(
-    [string]$Mode = "demo" # "demo", "cli", "eval", "test"
+    [string]$Mode = "demo",
+    [string]$PythonExe = ""
 )
 
-$PythonExe = "C:\Users\meetk\anaconda3\envs\slerpface\python.exe"
-if (-not (Test-Path $PythonExe)) {
-    $PythonExe = "python"
+$ErrorActionPreference = "Stop"
+if ([string]::IsNullOrWhiteSpace($PythonExe)) {
+    $workspacePython = Join-Path $PSScriptRoot ".venv/Scripts/python.exe"
+    $PythonExe = if (Test-Path -LiteralPath $workspacePython -PathType Leaf) { $workspacePython } else { "python" }
+}
+$selectedMode = $Mode.ToLowerInvariant()
+if ($selectedMode -notin @("demo", "cli", "eval", "test")) {
+    [Console]::Error.WriteLine("Unknown mode '$Mode'. Available modes: demo, cli, eval, test.")
+    exit 2
 }
 
-Write-Host "=== GuardFace: Anti-Spoofing & SlerpFace Security Suite ===" -ForegroundColor Cyan
-Write-Host "Using Python: $PythonExe"
-
-# Generate samples if not present
-if (-not (Test-Path ".\samples\genuine_personA_1.jpg")) {
-    Write-Host "`n[Setup] Generating synthetic test presentations in .\samples\..." -ForegroundColor Yellow
-    & $PythonExe .\create_demo_samples.py
+$exitCode = 2
+Push-Location -LiteralPath $PSScriptRoot
+try {
+    Write-Host "GuardFace research demonstration - Python: $PythonExe" -ForegroundColor Cyan
+    switch ($selectedMode) {
+        "test" {
+            & $PythonExe -B -m pytest -p no:cacheprovider (Join-Path $PSScriptRoot "tests")
+            $exitCode = $LASTEXITCODE
+        }
+        "eval" {
+            Write-Host "Synthetic heuristic benchmark; this does not establish standards compliance."
+            & $PythonExe -B (Join-Path $PSScriptRoot "evaluate_antispoof.py")
+            $exitCode = $LASTEXITCODE
+        }
+        "cli" {
+            $reference = Join-Path $PSScriptRoot "samples/genuine_personA_1.jpg"
+            $probes = @("genuine_personA_2.jpg", "spoof_screen_replay.jpg")
+            $exitCode = 0
+            foreach ($probe in $probes) {
+                $probePath = Join-Path $PSScriptRoot "samples/$probe"
+                if (-not (Test-Path -LiteralPath $reference -PathType Leaf) -or
+                    -not (Test-Path -LiteralPath $probePath -PathType Leaf)) {
+                    throw "Bundled samples are missing. Run create_demo_samples.py explicitly to recreate them."
+                }
+                & $PythonExe -B (Join-Path $PSScriptRoot "verify_with_antispoof.py") --demo --img1 $reference --img2 $probePath
+                $commandExitCode = $LASTEXITCODE
+                if ($commandExitCode -gt $exitCode) { $exitCode = $commandExitCode }
+                if ($commandExitCode -gt 1) { break }
+            }
+        }
+        "demo" {
+            & $PythonExe -B -m streamlit run (Join-Path $PSScriptRoot "app_demo.py")
+            $exitCode = $LASTEXITCODE
+        }
+    }
 }
-
-switch ($Mode.ToLower()) {
-    "test" {
-        Write-Host "`n[Mode: Unit Tests] Running subsystem tests..." -ForegroundColor Green
-        & $PythonExe .\tests\test_antispoof.py
-    }
-    "eval" {
-        Write-Host "`n[Mode: Benchmark] Running ISO/IEC 30107-3 PAD benchmark..." -ForegroundColor Green
-        & $PythonExe .\evaluate_antispoof.py
-    }
-    "cli" {
-        Write-Host "`n[Mode: CLI Test] Running 1:1 dual-tier verification..." -ForegroundColor Green
-        Write-Host "1. Testing Genuine vs Genuine (Live user):" -ForegroundColor White
-        & $PythonExe .\verify_with_antispoof.py --img1 .\samples\genuine_personA_1.jpg --img2 .\samples\genuine_personA_2.jpg
-
-        Write-Host "`n2. Testing Genuine vs Screen Replay Attack (Spoof attempt):" -ForegroundColor White
-        & $PythonExe .\verify_with_antispoof.py --img1 .\samples\genuine_personA_1.jpg --img2 .\samples\spoof_screen_replay.jpg
-    }
-    "demo" {
-        Write-Host "`n[Mode: Web Dashboard] Launching Streamlit Web App..." -ForegroundColor Green
-        & $PythonExe -m streamlit run .\app_demo.py
-    }
-    default {
-        Write-Host "Unknown mode: $Mode. Available modes: demo, cli, eval, test" -ForegroundColor Red
-    }
+catch {
+    [Console]::Error.WriteLine("GuardFace launcher failed: $($_.Exception.Message)")
+    $exitCode = 2
 }
+finally {
+    Pop-Location
+}
+exit $exitCode

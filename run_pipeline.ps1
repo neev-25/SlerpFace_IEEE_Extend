@@ -1,9 +1,6 @@
-# SlerpFace Pipeline - Windows PowerShell Script
-# Run from: D:\Coding\SlerpFace\recognition\
-# Usage: .\tasks\slerpface\run_pipeline.ps1
-
+# Compatibility notice for the unavailable original multi-stage research pipeline.
 param(
-    [string]$DataRoot = ".\tasks\slerpface\datasets",
+    [string]$DataRoot = "",
     [string]$Key = "CFP",
     [float]$Alpha = 0.9,
     [float]$DropRate = 0.5,
@@ -12,45 +9,10 @@ param(
     [string]$GpuIds = "0"
 )
 
-$ErrorActionPreference = "Stop"
-
-Write-Host "=== SlerpFace Pipeline ===" -ForegroundColor Cyan
-Write-Host "Working directory: $(Get-Location)"
-
-# Step 1: Feature Extraction
-Write-Host "`n[Step 1/3] Extracting face templates..." -ForegroundColor Yellow
-python -m tasks.slerpface.extract_template.verification `
-    --model_path=.\tasks\slerpface\ckpt\Backbone_Epoch_24_checkpoint.pth `
-    --data_root=$DataRoot `
-    --backbone=IR_50 `
-    --batch_size=$BatchSize `
-    --output_dir=.\tasks\slerpface\templates `
-    --gpu_ids=$GpuIds
-
-if ($LASTEXITCODE -ne 0) { Write-Error "Feature extraction failed!"; exit 1 }
-Write-Host "[Step 1/3] Done." -ForegroundColor Green
-
-# Step 2: Template Encryption
-Write-Host "`n[Step 2/3] Encrypting templates..." -ForegroundColor Yellow
-python -m tasks.slerpface.encrypt_template.enrollment `
-    --templates_folder .\tasks\slerpface\templates `
-    --key $Key `
-    --alpha $Alpha `
-    --drop_rate $DropRate `
-    --group_size $GroupSize
-
-if ($LASTEXITCODE -ne 0) { Write-Error "Template encryption failed!"; exit 1 }
-Write-Host "[Step 2/3] Done." -ForegroundColor Green
-
-# Step 3: Template Matching
-Write-Host "`n[Step 3/3] Matching templates..." -ForegroundColor Yellow
-python -m tasks.slerpface.match_template.gen_sim `
-    --templates_folder .\tasks\slerpface\templates `
-    --key $Key `
-    --alpha $Alpha `
-    --group_size $GroupSize
-
-if ($LASTEXITCODE -ne 0) { Write-Error "Template matching failed!"; exit 1 }
-Write-Host "[Step 3/3] Done." -ForegroundColor Green
-
-Write-Host "`n=== SlerpFace Pipeline Complete ===" -ForegroundColor Cyan
+# Fail before extraction or file writes: this checkout has no enrollment/matching
+# packages, so running the first stage alone would leave misleading partial output.
+$launcher = Join-Path $PSScriptRoot "run_guardface.ps1"
+[Console]::Error.WriteLine("The original three-stage dataset pipeline is unavailable: encrypt_template.enrollment and match_template.gen_sim are not included in this checkout.")
+[Console]::Error.WriteLine("For the supported research demo, run: & '$launcher' -Mode cli")
+[Console]::Error.WriteLine("For feature extraction only, from '$PSScriptRoot' run: python -m extract_template.verification --help. Supply a compatible checkpoint and external torchkit implementation; extraction does not enroll credentials.")
+exit 2

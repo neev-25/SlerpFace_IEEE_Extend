@@ -1,0 +1,7 @@
+# Optional CPU tensor backend; install runtime/development requirements first.
+# The explicit official index avoids similarly named third-party packages.
+# Pinned backbone source is already in third_party/tface; no PyPI torchkit needed.
+# This installs tensor support, not pretrained weights or biometric validation.
+--index-url https://download.pytorch.org/whl/cpu
+--only-binary=:all:
+torch==2.13.0

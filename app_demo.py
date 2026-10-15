@@ -1,318 +1,362 @@
-"""
-app_demo.py
-============
-Interactive Web Dashboard for GuardFace:
-Unified Presentation Attack Detection (Anti-Spoofing) & SlerpFace Template Protection.
+"""GuardFace research dashboard. Run with ``streamlit run app_demo.py``.
 
-Run with:
-  streamlit run app_demo.py
+Static-image PAD scores and transformed descriptors are research diagnostics;
+this application does not make an authentication or liveness assurance decision.
+Uploaded images stay in memory and are never written by this dashboard.
 """
 
-import os
-import sys
+import hashlib
+from pathlib import Path
+
 import numpy as np
 from PIL import Image
-
-PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
-if PROJECT_ROOT not in sys.path:
-    sys.path.insert(0, PROJECT_ROOT)
-
 import streamlit as st
+
 from modules.antispoof.detector import AntiSpoofDetector
 from modules.antispoof.frequency_analysis import compute_fft_spectrum
-from verify_with_antispoof import slerp_encrypt, cosine_similarity, extract_face_features
+from modules.image_input import load_rgb_image
+from verify_with_antispoof import inspect_real_image, run_pipeline
+from modules.face_backend import FaceBackendUnavailable, FaceInputError, face_backend_status
 
 
-# ── Page Config & Custom Styling ─────────────────────────────────────────────
-st.set_page_config(
-    page_title="GuardFace: Anti-Spoof & SlerpFace",
-    page_icon="🛡️",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
-
-st.markdown("""
-<style>
-    .main-title {
-        font-size: 2.3rem;
-        font-weight: 700;
-        color: #1E293B;
-        margin-bottom: 0.2rem;
-    }
-    .sub-title {
-        font-size: 1.1rem;
-        color: #64748B;
-        margin-bottom: 1.5rem;
-    }
-    .metric-card {
-        background-color: #F8FAFC;
-        border-radius: 8px;
-        padding: 1rem;
-        border: 1px solid #E2E8F0;
-        margin-bottom: 0.8rem;
-    }
-    .badge-genuine {
-        background-color: #DCFCE7;
-        color: #166534;
-        padding: 4px 12px;
-        border-radius: 9999px;
-        font-weight: 600;
-    }
-    .badge-spoof {
-        background-color: #FEE2E2;
-        color: #991B1B;
-        padding: 4px 12px;
-        border-radius: 9999px;
-        font-weight: 600;
-    }
-</style>
-""", unsafe_allow_html=True)
+PRESETS = [
+    "Synthetic skin-texture pattern",
+    "Synthetic print pattern",
+    "Synthetic screen pattern",
+]
 
 
-# ── Sidebar Controls ──────────────────────────────────────────────────────────
-with st.sidebar:
-    st.header("⚙️ System Configuration")
-    st.markdown("### Tier 1: Anti-Spoofing (PAD)")
-    liveness_thresh = st.slider("Liveness Threshold", 0.40, 0.80, 0.60, 0.05,
-                                help="Score >= threshold is classified as a genuine live human face.")
-
-    st.markdown("### Tier 2: SlerpFace Protection")
-    slerp_alpha = st.slider("SLERP Rotation Alpha (α)", 0.50, 1.00, 0.90, 0.05,
-                            help="Degree of rotation towards random noise distribution.")
-    drop_rate = st.slider("Feature Dropout Rate (β)", 0.10, 0.90, 0.50, 0.05,
-                          help="Percentage of feature dimensions randomly shredded to ensure irreversibility.")
-    match_thresh = st.slider("Match Verification Threshold", 0.10, 0.60, 0.30, 0.05,
-                             help="Cosine similarity threshold for confirming identity.")
-
-    st.markdown("---")
-    st.markdown("💡 **Architecture Highlights:**")
-    st.markdown("- **Front-End:** 2D Fourier Spectrum + LBP Texture")
-    st.markdown("- **Back-End:** Slerp Hypersphere Rotation + Group Dropout")
-    st.markdown("- **Hardware:** RTX GPU Accelerated")
-
-
-# ── Title Header ─────────────────────────────────────────────────────────────
-st.markdown('<div class="main-title">🛡️ GuardFace: Dual-Tier Secure Biometric System</div>', unsafe_allow_html=True)
-st.markdown('<div class="sub-title">Unified Presentation Attack Detection (Anti-Spoofing) & Irreversible SlerpFace Template Protection</div>', unsafe_allow_html=True)
-
-
-# ── Sample Generator for Live Testing ─────────────────────────────────────────
-def get_synthetic_sample(sample_type: str) -> np.ndarray:
+def get_synthetic_sample(sample_type: str, seed: int = 42) -> np.ndarray:
+    """Create a reproducible illustration without modifying NumPy's global RNG."""
+    rng = np.random.default_rng(seed)
     y, x = np.ogrid[:112, :112]
-    cy, cx = 56, 56
-    radial_light = np.exp(-((x - cx) ** 2 + (y - cy) ** 2) / (2 * 45 ** 2))
-
+    radial_light = np.exp(-((x - 56) ** 2 + (y - 56) ** 2) / (2 * 45 ** 2))
     skin = np.zeros((112, 112, 3), dtype=np.float32)
-    skin[:, :, 0] = 180 * (0.7 + 0.3 * radial_light) + np.random.normal(0, 3.5, (112, 112))
-    skin[:, :, 1] = 135 * (0.7 + 0.3 * radial_light) + np.random.normal(0, 3.0, (112, 112))
-    skin[:, :, 2] = 105 * (0.7 + 0.3 * radial_light) + np.random.normal(0, 2.5, (112, 112))
-    bona_fide = np.clip(skin, 0, 255).astype(np.uint8)
-
-    if sample_type == "Genuine (Live Human)":
-        return bona_fide
-    elif sample_type == "Print Attack (Paper Photo)":
-        p = bona_fide.astype(np.float32) * 0.85 + 20.0
-        grid = (np.sin(x * 1.5) * np.cos(y * 1.5)) * 14.0
-        p += grid[:, :, None]
-        mean_lum = np.mean(p, axis=2, keepdims=True)
-        p = p * 0.70 + mean_lum * 0.30
-        return np.clip(p, 0, 255).astype(np.uint8)
-    elif sample_type == "Screen Replay (Phone Display)":
-        s = bona_fide.astype(np.float32)
+    for channel, (mean, deviation) in enumerate([(180, 3.5), (135, 3.0), (105, 2.5)]):
+        skin[:, :, channel] = mean * (0.7 + 0.3 * radial_light) + rng.normal(0, deviation, (112, 112))
+    sample = np.clip(skin, 0, 255).astype(np.uint8)
+    if sample_type == PRESETS[0]:
+        return sample
+    if sample_type == PRESETS[1]:
+        pattern = sample.astype(np.float32) * 0.85 + 20.0
+        pattern += ((np.sin(x * 1.5) * np.cos(y * 1.5)) * 14.0)[:, :, None]
+        pattern = pattern * 0.70 + np.mean(pattern, axis=2, keepdims=True) * 0.30
+        return np.clip(pattern, 0, 255).astype(np.uint8)
+    if sample_type == PRESETS[2]:
+        pattern = sample.astype(np.float32)
         moire = (np.sin(x * 0.8 + y * 0.4) + np.cos(x * 0.4 - y * 0.8)) * 20.0
-        s[:, :, 0] += moire * 0.8
-        s[:, :, 1] += moire * 1.1
-        s[:, :, 2] += moire * 1.5
-        glare = np.exp(-((x - 80) ** 2 + (y - 30) ** 2) / (2 * 12 ** 2)) > 0.6
-        s[glare] = 254.0
-        return np.clip(s, 0, 255).astype(np.uint8)
-    return bona_fide
+        for channel, scale in enumerate([0.8, 1.1, 1.5]):
+            pattern[:, :, channel] += moire * scale
+        pattern[np.exp(-((x - 80) ** 2 + (y - 30) ** 2) / (2 * 12 ** 2)) > 0.6] = 254
+        return np.clip(pattern, 0, 255).astype(np.uint8)
+    raise ValueError("Unknown synthetic sample type")
 
 
-# ── Tabs ─────────────────────────────────────────────────────────────────────
-tab1, tab2, tab3 = st.tabs(["🔍 Liveness & Template Inspector", "🤝 1:1 Secure Verification", "📊 Benchmark & IEEE Metrics"])
+def preset_sample(slot: str, sample_type: str) -> np.ndarray:
+    """Retain the selected sample in this session across unrelated reruns."""
+    key = f"sample_{slot}"
+    if key not in st.session_state or st.session_state[key][0] != sample_type:
+        st.session_state[key] = (sample_type, get_synthetic_sample(sample_type))
+    return st.session_state[key][1]
 
-detector = AntiSpoofDetector(threshold=liveness_thresh)
 
-# ═════════════════════════════════════════════════════════════════════════════
-# TAB 1: Single Image Inspection
-# ═════════════════════════════════════════════════════════════════════════════
+def decode_capture(capture):
+    if capture is None:
+        return None
+    try:
+        if getattr(capture, "size", 0) > 20 * 1024 * 1024:
+            raise ValueError("Image file exceeds the upload limit")
+        return np.asarray(load_rgb_image(capture))
+    except (ValueError, OSError, TypeError):
+        st.error("Unable to read this image. Use a valid JPG or PNG within the image size limits.")
+        return None
+
+
+def select_image(slot: str, label: str):
+    mode = st.radio(label, ["Preset", "Upload", "Camera"], horizontal=True, key=f"in{slot}")
+    if mode == "Preset":
+        sample_type = st.selectbox(f"Sample {slot}:", PRESETS, key=f"t{slot}")
+        img = preset_sample(slot, sample_type)
+        st.caption("Synthetic illustration; it is not a captured face or liveness evidence.")
+    elif mode == "Upload":
+        img = decode_capture(st.file_uploader(f"Upload Image {slot}", type=["jpg", "jpeg", "png"], key=f"up{slot}"))
+    else:
+        img = decode_capture(st.camera_input(f"Capture Image {slot}", key=f"cam{slot}"))
+    if img is None:
+        st.info("Supply an image to continue.")
+    elif mode != "Camera":
+        st.image(img, caption="Selected input", width="stretch")
+    return img, mode == "Preset"
+
+
+def inspect_pad(img, threshold, *, synthetic=False):
+    """Cache only the latest diagnostics within the user's session."""
+    digest = hashlib.sha256(img.tobytes()).digest()
+    key = (digest, img.shape, threshold, synthetic, backend.get("ready", False))
+    cached = st.session_state.get("_inspector_pad")
+    if cached is None or cached[0] != key:
+        if synthetic:
+            result = {"heuristic": AntiSpoofDetector(threshold=threshold, require_face=False).evaluate(img).to_dict()}
+        else:
+            result = inspect_real_image(img, liveness_thresh=threshold)
+        st.session_state["_inspector_pad"] = (key, result)
+    return st.session_state["_inspector_pad"][1]
+
+
+def render_face_details(face, label):
+    """Show only public quality metadata, never descriptors or protection material."""
+    if not isinstance(face, dict):
+        return
+    confidence = face.get("confidence", face.get("detection_score"))
+    if isinstance(confidence, (int, float)):
+        st.caption(f"{label}: one aligned face; detection score {confidence:.3f}.")
+    quality = face.get("quality")
+    if isinstance(quality, dict):
+        width = quality.get("face_width_pixels")
+        height = quality.get("face_height_pixels")
+        if isinstance(width, (int, float)) and isinstance(height, (int, float)):
+            st.caption(f"{label} detected face size: {width:.0f} × {height:.0f} pixels before alignment.")
+        warnings = quality.get("warnings", [])
+        if isinstance(warnings, list):
+            for warning in warnings:
+                if isinstance(warning, str):
+                    st.warning(f"{label}: {warning}")
+
+
+def render_presentation(presentation, label):
+    """A learned estimate is advisory; it must never become a liveness claim."""
+    if not isinstance(presentation, dict):
+        return
+    status = presentation.get("status", "UNAVAILABLE")
+    st.caption(f"{label} presentation analysis: {status}. Static-image estimates do not establish liveness.")
+    # A public model label is useful; avoid dumping arbitrary report payloads.
+    estimate = presentation.get("label", presentation.get("prediction"))
+    if isinstance(estimate, str):
+        st.write(f"Model estimate: {estimate}")
+    score = presentation.get("bona_fide_score")
+    if isinstance(score, (int, float)) and np.isfinite(score):
+        st.write(f"**Bona fide model score (uncalibrated):** {score:.4f}")
+        st.caption("This model score has no validated threshold for your camera and does not determine the face similarity result.")
+    if isinstance(presentation.get("model_name"), str):
+        st.caption(f"Presentation model: {presentation['model_name']}")
+    if status == "UNAVAILABLE":
+        st.caption("Presentation model unavailable; face comparison can still run as an unverified experiment.")
+
+
+def render_report(report):
+    """Render actual core outcomes, without turning diagnostic scores into identity claims."""
+    st.write(f"Processing status: {report.get('status', 'UNVERIFIED')}")
+    if report.get("processed"):
+        if report.get("status") == "DEMO_ONLY":
+            st.info("Template demonstration completed. Identity remains unverified; synthetic descriptors do not measure face identity.")
+        else:
+            label = report.get("comparison_label")
+            if label in {"similar", "different", "uncertain"}:
+                st.info(f"Experimental comparison: {label}. Identity remains unverified; this is not an authentication decision.")
+                threshold = report.get("match_threshold", match_thresh)
+                st.caption(f"Based on raw face cosine, threshold {threshold:.3f}, with an uncertainty band of ±0.030. This operating point is not calibrated to your camera or population.")
+            else:
+                st.info("Research template extracted from the aligned face. Identity remains unverified; no comparison was requested.")
+        columns = st.columns(2)
+        if "raw_similarity" in report:
+            columns[0].metric("Raw descriptor cosine (diagnostic)", f"{report['raw_similarity']:.4f}")
+        if "encrypted_similarity" in report:
+            columns[1].metric("Transformed descriptor cosine (diagnostic)", f"{report['encrypted_similarity']:.4f}")
+        if "encrypted_similarity" in report:
+            st.caption("The SLERP/dropout cosine illustrates the feature transform. It does not determine the experimental comparison result.")
+    else:
+        st.warning("No template demonstration completed. Identity remains unverified.")
+    for number in (1, 2):
+        render_face_details(report.get(f"img{number}_face"), f"Input {number}")
+        render_presentation(report.get(f"img{number}_presentation"), f"Input {number}")
+    if report.get("reason"):
+        st.write(report["reason"])
+
+
+def run_experiment(img1, img2=None):
+    try:
+        _, report = run_pipeline(
+            img1, img2,
+            liveness_thresh=liveness_thresh,
+            slerp_alpha=slerp_alpha,
+            drop_rate=drop_rate,
+            match_thresh=match_thresh,
+            model_path=model_path.strip() or None,
+            demo=demo_features,
+        )
+    except (ValueError, OSError, RuntimeError, TypeError):
+        st.error("Processing unavailable. Check the input images and local model configuration.")
+        return {"status": "PROCESSING_ERROR", "processed": False,
+                "reason": "Processing unavailable. Check the input images and local model configuration."}
+    return report
+
+
+def experiment_key(img1, img2=None):
+    """Invalidate stale results on input/configuration changes, without retaining pixels."""
+    if img1 is None:
+        return None
+    images = tuple(None if image is None else (image.shape, image.dtype.str, hashlib.sha256(image.tobytes()).digest())
+                   for image in (img1, img2))
+    checkpoint = model_path.strip()
+    metadata = None
+    if checkpoint:
+        try:
+            stat = Path(checkpoint).stat()
+            metadata = (stat.st_size, stat.st_mtime_ns)
+        except (OSError, ValueError):
+            pass
+    return (images, liveness_thresh, slerp_alpha, drop_rate, match_thresh,
+            checkpoint, metadata, demo_features)
+
+
+def experiment_action(slot, img1, img2=None):
+    """Keep a result visible across reruns until its inputs/settings change."""
+    key = experiment_key(img1, img2)
+    storage = f"_experiment_{slot}"
+    cached = st.session_state.get(storage)
+    if cached is not None and cached[0] != key:
+        del st.session_state[storage]
+        cached = None
+    label = "Run template demonstration" if slot == "inspect" else "Run pair comparison"
+    clicked = st.button(label, key=f"{slot}_run", type="primary" if slot == "pair" else "secondary",
+                        disabled=img1 is None or (slot == "pair" and img2 is None))
+    if clicked:
+        with st.spinner("Detecting, aligning and extracting research features..." if not demo_features else "Running synthetic feature demonstration..."):
+            report = run_experiment(img1, img2)
+        cached = (key, report)
+        st.session_state[storage] = cached
+    if cached is not None:
+        render_report(cached[1])
+    else:
+        st.caption("No result for the current inputs and settings. Run the explicit operation above.")
+
+
+st.set_page_config(page_title="GuardFace Research Demo", page_icon="🛡️", layout="wide")
+st.title("🛡️ GuardFace Research Demo")
+st.warning("Research diagnostics only. Face similarity is experimental; static-image presentation checks do not establish liveness. This prototype does not authenticate anyone.")
+
+with st.sidebar:
+    st.header("Research configuration")
+    liveness_thresh = st.slider("PAD heuristic threshold", 0.40, 0.80, 0.60, 0.05,
+                                help="Controls the synthetic illustration gate. On real photos the texture heuristic is advisory and cannot block face comparison.")
+    slerp_alpha = st.slider("SLERP rotation alpha", 0.00, 0.95, 0.90, 0.05,
+                            help="Alpha 1 discards identity information and is excluded.")
+    drop_rate = st.slider("Feature dropout rate", 0.00, 0.90, 0.50, 0.05)
+    match_thresh = st.slider("Experimental cosine threshold", -1.000, 1.000, 0.363, 0.001, format="%.3f",
+                             help="Starting SFace cosine operating point from OpenCV's LFW example; not calibrated locally. Scores within ±0.030 are uncertain. Only raw face cosine determines the experimental label.")
+    demo_features = st.checkbox("Use synthetic feature demo", value=False,
+                                help="Explicitly use image statistics and skip the face-presence check. These are not biometric identity descriptors; inputs need not contain a face.")
+    model_path = st.text_input("Trained checkpoint path (optional)",
+                               help="Leave empty to use the provisioned YuNet + SFace backend. A custom compatible IR-50 checkpoint is an advanced research option, with a separately calibrated operating point required.")
+    try:
+        backend = face_backend_status()
+    except (ValueError, OSError, RuntimeError, TypeError):
+        backend = {"ready": False}
+    if demo_features:
+        st.caption("Synthetic features selected. The face threshold and trained checkpoint do not turn this illustration into a biometric comparison.")
+    elif model_path.strip():
+        st.caption("Custom checkpoint selected. The SFace default operating point is not calibrated for a custom model.")
+    else:
+        if backend.get("ready"):
+            st.caption("Face backend ready: YuNet detection/alignment + SFace recognition (CPU). No checkpoint entry required.")
+        else:
+            st.warning("Face backend unavailable. Run .\\.venv\\Scripts\\python.exe scripts/provision_face_models.py to install the reviewed models.")
+    st.caption("Capture or upload one clear face per image for a real comparison. Images remain in memory; no GPU or cryptographic security guarantee is implied.")
+
+tab1, tab2, tab3 = st.tabs(["🔍 PAD & Template Inspector", "🤝 Pair Comparison", "📊 Synthetic Benchmark"])
+
 with tab1:
-    col_input, col_results = st.columns([1, 1.2])
+    left, right = st.columns([1, 1.2])
+    with left:
+        st.subheader("1. Image input")
+        inspector_img, synthetic_input = select_image("inspect", "Inspector input:")
+        if synthetic_input and not demo_features:
+            st.info("Presets contain generated textures, not faces. Enable Use synthetic feature demo for these illustrations, or select Upload/Camera for real face features.")
+    with right:
+        st.subheader("2. Heuristic diagnostics")
+        if inspector_img is not None:
+            try:
+                result = inspect_pad(inspector_img, liveness_thresh, synthetic=synthetic_input)
+            except FaceInputError as exc:
+                result = None
+                st.warning(str(exc))
+            except FaceBackendUnavailable:
+                result = None
+                st.warning("Face analysis unavailable. Check the model setup shown in the sidebar, then retry.")
+            except (ValueError, OSError, RuntimeError, TypeError):
+                result = None
+                st.error("Image analysis could not process this input. Try a clear, evenly lit photo with exactly one face.")
+            if result is not None and isinstance(result.get("heuristic"), dict):
+                heuristic = result["heuristic"]
+                score = heuristic.get("liveness_score", 0.0)
+                st.metric("PAD heuristic score", f"{score:.4f}")
+                st.progress(float(np.clip(score, 0, 1)))
+                if synthetic_input:
+                    st.write("Synthetic illustration gate: " + ("passed" if heuristic.get("is_live") else "rejected"))
+                else:
+                    st.write("Heuristic assessment: inconclusive (advisory only)")
+                    render_face_details(result.get("face"), "Inspector")
+                    render_presentation(result.get("presentation"), "Inspector")
+                st.caption("Texture scores do not establish liveness. Real face comparison uses the detected, aligned face and does not reject a capture because of this heuristic score.")
+                diagnostics = heuristic.get("diagnostics", {})
+                # Plain text inherits the readable theme color; JSON number
+                # highlighting has insufficient contrast in the light theme.
+                for name, label in [
+                    ("moire_score", "Moiré score"),
+                    ("high_freq_ratio", "High frequency ratio"),
+                    ("lbp_entropy", "LBP entropy"),
+                    ("chrominance_diversity", "Chrominance diversity"),
+                ]:
+                    if name in diagnostics:
+                        st.write(f"**{label}:** {diagnostics[name]:.4f}")
+                gray = np.mean(inspector_img, axis=2).astype(np.uint8)
+                # Bound this optional visual independently of the detector's own analysis size.
+                spectrum_input = np.asarray(Image.fromarray(gray).resize((256, 256)))
+                spectrum = compute_fft_spectrum(spectrum_input)
+                normalized = ((spectrum - spectrum.min()) / (np.ptp(spectrum) + 1e-8) * 255).astype(np.uint8)
+                st.image(normalized, caption="Fourier spectrum visualization", width=200)
+            elif result is not None and result.get("reason"):
+                st.info(result["reason"])
+        st.subheader("3. Template operation")
+        experiment_action("inspect", inspector_img)
 
-    with col_input:
-        st.subheader("1. Face Input")
-        input_mode = st.radio("Choose Input Method:", ["Select Preset Sample", "Upload Image File", "Camera Capture"], horizontal=True)
-
-        if input_mode == "Select Preset Sample":
-            preset = st.selectbox("Sample Type:", [
-                "Genuine (Live Human)",
-                "Print Attack (Paper Photo)",
-                "Screen Replay (Phone Display)"
-            ])
-            img_array = get_synthetic_sample(preset)
-        elif input_mode == "Upload Image File":
-            uploaded = st.file_uploader("Upload Face Image", type=["jpg", "png", "jpeg"])
-            if uploaded:
-                img_array = np.array(Image.open(uploaded).convert("RGB"))
-            else:
-                img_array = get_synthetic_sample("Genuine (Live Human)")
-        else:
-            camera_image = st.camera_input("Capture Face from Camera")
-            if camera_image:
-                img_array = np.array(Image.open(camera_image).convert("RGB"))
-            else:
-                img_array = get_synthetic_sample("Genuine (Live Human)")
-
-        st.image(img_array, caption="Input Face Presentation", use_container_width=True)
-
-    with col_results:
-        st.subheader("2. Dual-Tier Inspection Results")
-        res = detector.evaluate(img_array)
-
-        # Liveness Badge
-        if res.is_live:
-            st.markdown(f'<span class="badge-genuine">✅ {res.verdict}</span>', unsafe_allow_html=True)
-        else:
-            st.markdown(f'<span class="badge-spoof">🚨 {res.verdict}</span>', unsafe_allow_html=True)
-
-        st.markdown(f"**Liveness Score:** `{res.liveness_score:.4f}` (Threshold: `{liveness_thresh:.2f}`)")
-        st.progress(min(max(res.liveness_score, 0.0), 1.0))
-        st.info(res.summary_text)
-
-        # Diagnostics Breakdown
-        st.markdown("#### 🔬 Front-End Diagnostics:")
-        d1, d2 = st.columns(2)
-        with d1:
-            st.metric("Moiré Interference", f"{res.diagnostics['moire_score']:.4f}")
-            st.metric("High-Freq Energy Ratio", f"{res.diagnostics['high_freq_ratio']:.4f}")
-        with d2:
-            st.metric("LBP Texture Entropy", f"{res.diagnostics['lbp_entropy']:.4f}")
-            st.metric("Chrominance Diversity", f"{res.diagnostics['chrominance_diversity']:.2f}")
-
-        # SlerpFace Status
-        st.markdown("#### 🔒 Back-End Template Status:")
-        if not res.is_live:
-            st.error("❌ ZERO-LEAKAGE ACTIVE: Feature extraction aborted because front-end presentation attack was detected.")
-        else:
-            st.success(f"✅ SlerpFace Encrypted: α={slerp_alpha:.2f}, {int(drop_rate*100)}% dimensions shredded.")
-            # 2D Fourier Spectrum Visualizer
-            gray = np.mean(img_array, axis=2).astype(np.uint8)
-            spectrum = compute_fft_spectrum(gray)
-            norm_spectrum = ((spectrum - spectrum.min()) / (spectrum.max() - spectrum.min() + 1e-8) * 255).astype(np.uint8)
-            st.image(norm_spectrum, caption="2D Fourier Power Spectrum (Low Freq Center → High Freq Perimeter)", width=200)
-
-# ═════════════════════════════════════════════════════════════════════════════
-# TAB 2: 1:1 Secure Verification
-# ═════════════════════════════════════════════════════════════════════════════
 with tab2:
-    st.subheader("1:1 End-to-End Secure Face Verification")
-    st.markdown("Tests both Front-End Spoof Interception and Back-End SlerpFace Template Matching.")
+    st.subheader("Pair comparison experiment")
+    st.write("Supply two photos, each with exactly one clear face, then run comparison. Faces are detected and aligned before trained extraction. Presentation analysis is advisory; its score cannot establish a live person.")
+    first, second = st.columns(2)
+    with first:
+        st.markdown("**Reference input**")
+        img1, synthetic1 = select_image("1", "Image 1 input:")
+    with second:
+        st.markdown("**Comparison input**")
+        img2, synthetic2 = select_image("2", "Image 2 input:")
+    if (synthetic1 or synthetic2) and not demo_features:
+        st.info("A selected preset is a generated texture. Enable Use synthetic feature demo to compare presets, or use two real face photos with that option off.")
+    experiment_action("pair", img1, img2)
 
-    c1, c2 = st.columns(2)
-    with c1:
-        st.markdown("**Face 1 (Enrolled Gallery / Reference)**")
-        input_type_1 = st.radio("Face 1 Input:", ["Preset", "Upload", "Camera"], horizontal=True, key="in1")
-        if input_type_1 == "Preset":
-            t1 = st.selectbox("Sample 1:", ["Genuine (Live Human)", "Print Attack (Paper Photo)", "Screen Replay (Phone Display)"], key="t1")
-            img1 = get_synthetic_sample(t1)
-        elif input_type_1 == "Upload":
-            up1 = st.file_uploader("Upload Face 1", type=["jpg", "png", "jpeg"], key="up1")
-            img1 = np.array(Image.open(up1).convert("RGB")) if up1 else get_synthetic_sample("Genuine (Live Human)")
-        else:
-            cam1 = st.camera_input("Capture Face 1", key="cam1")
-            img1 = np.array(Image.open(cam1).convert("RGB")) if cam1 else get_synthetic_sample("Genuine (Live Human)")
-        st.image(img1, width=160)
-
-    with c2:
-        st.markdown("**Face 2 (Live Probe / Verification)**")
-        input_type_2 = st.radio("Face 2 Input:", ["Preset", "Upload", "Camera"], horizontal=True, key="in2")
-        if input_type_2 == "Preset":
-            t2 = st.selectbox("Sample 2:", ["Genuine (Live Human)", "Print Attack (Paper Photo)", "Screen Replay (Phone Display)"], index=0, key="t2")
-            img2 = get_synthetic_sample(t2)
-        elif input_type_2 == "Upload":
-            up2 = st.file_uploader("Upload Face 2", type=["jpg", "png", "jpeg"], key="up2")
-            img2 = np.array(Image.open(up2).convert("RGB")) if up2 else get_synthetic_sample("Genuine (Live Human)")
-        else:
-            cam2 = st.camera_input("Capture Face 2", key="cam2")
-            img2 = np.array(Image.open(cam2).convert("RGB")) if cam2 else get_synthetic_sample("Genuine (Live Human)")
-        st.image(img2, width=160)
-
-    if st.button("🚀 Run Secure Verification", type="primary"):
-        r1 = detector.evaluate(img1)
-        r2 = detector.evaluate(img2)
-
-        st.markdown("---")
-        if not r1.is_live or not r2.is_live:
-            st.error("🚨 ACCESS REJECTED: Presentation Attack Detected at Front-End!")
-            if not r1.is_live:
-                st.warning(f"Face 1 Failed Liveness: {r1.verdict} (Score: {r1.liveness_score:.4f})")
-            if not r2.is_live:
-                st.warning(f"Face 2 Failed Liveness: {r2.verdict} (Score: {r2.liveness_score:.4f})")
-            st.info("🛡️ Database Privacy: Zero biometric templates were extracted or compared.")
-        else:
-            st.success("✅ Tier 1 Passed: Both presentations confirmed as live human faces.")
-            # Tier 2 Extraction & SlerpFace Encryption
-            temp_path1 = os.path.join(PROJECT_ROOT, "temp_img1.jpg")
-            temp_path2 = os.path.join(PROJECT_ROOT, "temp_img2.jpg")
-            Image.fromarray(img1).save(temp_path1)
-            Image.fromarray(img2).save(temp_path2)
-
-            g1, v1 = extract_face_features(temp_path1)
-            g2, v2 = extract_face_features(temp_path2)
-
-            enc1 = slerp_encrypt(g1, alpha=slerp_alpha, drop_rate=drop_rate, seed=42)
-            enc2 = slerp_encrypt(g2, alpha=slerp_alpha, drop_rate=drop_rate, seed=42)
-
-            raw_sim = cosine_similarity(v1, v2)
-            enc_sim = cosine_similarity(enc1, enc2)
-            is_match = enc_sim >= match_thresh
-
-            m1, m2, m3 = st.columns(3)
-            m1.metric("Raw Similarity", f"{raw_sim:.4f}")
-            m2.metric("Encrypted Slerp Similarity", f"{enc_sim:.4f}")
-            m3.metric("Decision Threshold", f"{match_thresh:.2f}")
-
-            if is_match:
-                st.success("🎉 IDENTITY VERIFIED: Same Person (Authenticated with full privacy protection)")
-            else:
-                st.warning("❌ REJECTED: Different Person")
-
-# ═════════════════════════════════════════════════════════════════════════════
-# TAB 3: Benchmark & IEEE Metrics
-# ═════════════════════════════════════════════════════════════════════════════
 with tab3:
-    st.subheader("ISO/IEC 30107-3 Biometric Presentation Attack Detection Benchmark")
-    st.markdown("Evaluates system security across standardized error metrics:")
-
-    if st.button("📊 Run Full Benchmark Evaluation"):
+    st.subheader("Synthetic heuristic benchmark")
+    st.write("These constructed patterns test code behavior. They do not measure physical attacks, real identities, or compliance with ISO/IEC 30107-3.")
+    benchmark = st.session_state.get("_benchmark_report")
+    if benchmark is not None and benchmark[0] != liveness_thresh:
+        del st.session_state["_benchmark_report"]
+        benchmark = None
+    if st.button("Run synthetic benchmark", key="benchmark_run"):
         from evaluate_antispoof import generate_synthetic_benchmark_dataset
 
-        with st.spinner("Evaluating test presentation samples..."):
+        with st.spinner("Evaluating synthetic patterns..."):
+            synthetic_detector = AntiSpoofDetector(threshold=liveness_thresh, require_face=False)
             dataset = generate_synthetic_benchmark_dataset(num_samples_per_class=35)
-            bona_fide = [d for d in dataset if not d["is_spoof"]]
-            spoofs = [d for d in dataset if d["is_spoof"]]
-
-            bona_scores = [detector.evaluate(d["img"]).liveness_score for d in bona_fide]
-            spoof_scores = [detector.evaluate(d["img"]).liveness_score for d in spoofs]
-
-            bpcer = sum(1 for s in bona_scores if s < liveness_thresh) / len(bona_scores) * 100.0
-            apcer = sum(1 for s in spoof_scores if s >= liveness_thresh) / len(spoof_scores) * 100.0
-            acer = (bpcer + apcer) / 2.0
-
-            b1, b2, b3, b4 = st.columns(4)
-            b1.metric("BPCER (False Rejection)", f"{bpcer:.2f}%")
-            b2.metric("APCER (Spoof Acceptance)", f"{apcer:.2f}%")
-            b3.metric("ACER (Avg Error)", f"{acer:.2f}%")
-            b4.metric("Spoof Interception Rate", f"{100.0 - apcer:.2f}%")
-
-            st.markdown("#### 📝 Publication-Ready IEEE Comparison Table:")
-            st.table({
-                "System Architecture": ["SlerpFace Alone (AAAI-25)", "GuardFace (Our Proposed Extension)"],
-                "Front-End Defense": ["None (Vulnerable to Spoof)", "Dual-Domain Frequency-Texture PAD"],
-                "Back-End Protection": ["Slerp (α=0.9, β=0.5)", "Slerp (α=0.9, β=0.5)"],
-                "BPCER (%)": ["0.00%", f"{bpcer:.2f}%"],
-                "APCER (%)": ["100.00%", f"{apcer:.2f}%"],
-                "ACER (%)": ["50.00%", f"{acer:.2f}%"],
-                "Security Scope": ["Database Only", "End-to-End (Physical + Database)"]
-            })
+            bona_scores = [synthetic_detector.evaluate(d["img"]).liveness_score for d in dataset if not d["is_spoof"]]
+            spoof_scores = [synthetic_detector.evaluate(d["img"]).liveness_score for d in dataset if d["is_spoof"]]
+            bpcer = sum(score < liveness_thresh for score in bona_scores) / len(bona_scores) * 100
+            apcer = sum(score >= liveness_thresh for score in spoof_scores) / len(spoof_scores) * 100
+            benchmark = (liveness_thresh, bpcer, apcer, len(dataset))
+            st.session_state["_benchmark_report"] = benchmark
+    if benchmark is not None:
+        _, bpcer, apcer, count = benchmark
+        cols = st.columns(3)
+        cols[0].metric("Synthetic BPCER", f"{bpcer:.2f}%")
+        cols[1].metric("Synthetic APCER", f"{apcer:.2f}%")
+        cols[2].metric("Synthetic ACER", f"{(bpcer + apcer) / 2:.2f}%")
+        st.caption(f"Evaluated {count} generated patterns. Independent camera, print, screen, and identity validation remains required.")

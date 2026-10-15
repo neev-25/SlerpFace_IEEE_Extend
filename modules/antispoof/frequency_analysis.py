@@ -3,13 +3,8 @@ modules/antispoof/frequency_analysis.py
 ========================================
 Fourier Frequency Analysis for Face Presentation Attack Detection (PAD).
 
-Physical Principle:
-- Genuine human faces have smooth 3D curved surfaces producing continuous, natural
-  spatial frequency decay.
-- Digital screens (phone/laptop/tablet) produce strong periodic high-frequency spikes
-  due to discrete pixel matrices, refresh artifacts, and moiré interference.
-- Printed photos (paper/cardboard) suffer from halftone printing dot grids or high-frequency
-  attenuation (blurring of fine epidermal micro-details).
+These spectral heuristics describe image patterns, not physical liveness.
+Their thresholds need validation on independent real presentation data.
 """
 
 import numpy as np
@@ -46,16 +41,14 @@ def compute_radial_profile(power_spectrum: np.ndarray, num_bins: int = 50) -> np
 
     # Bin the radial distances
     bin_edges = np.linspace(0, max_r, num_bins + 1)
-    radial_profile = np.zeros(num_bins, dtype=np.float64)
-
-    for i in range(num_bins):
-        mask = (r >= bin_edges[i]) & (r < bin_edges[i + 1])
-        if np.any(mask):
-            radial_profile[i] = np.mean(power_spectrum[mask])
-        else:
-            radial_profile[i] = 0.0
-
-    return radial_profile
+    if not isinstance(num_bins, int) or num_bins <= 0 or max_r <= 0:
+        raise ValueError("Radial profile needs positive bins and image dimensions of at least two.")
+    # Accumulate each pixel once instead of scanning the full image per band.
+    valid = r < max_r
+    indices = np.searchsorted(bin_edges, r[valid], side="right") - 1
+    sums = np.bincount(indices, weights=power_spectrum[valid], minlength=num_bins)
+    counts = np.bincount(indices, minlength=num_bins)
+    return np.divide(sums, counts, out=np.zeros(num_bins), where=counts > 0)
 
 
 def detect_moire_patterns(power_spectrum: np.ndarray) -> float:
@@ -123,7 +116,6 @@ def analyze_frequency(img_rgb: np.ndarray) -> dict:
 
     # 1. High frequency energy ratio
     total_energy = np.sum(radial_prof) + 1e-8
-    low_band = np.sum(radial_prof[:10])
     mid_band = np.sum(radial_prof[10:28])
     high_band = np.sum(radial_prof[28:])
 

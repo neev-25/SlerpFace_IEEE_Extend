@@ -1,0 +1,17 @@
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py", "comprehensive_test_suite.py"]
+pythonpath = ["."]
+addopts = "-ra"
+
+[tool.ruff]
+target-version = "py311"
+exclude = ["__pycache__", ".git", ".venv", ".research-venv", "venv", "build", "dist", "report_images", "output", "third_party"]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/test_antispoof.py" = ["E402"]
+"tests/comprehensive_test_suite.py" = ["E402"]
+"generate_report_images.py" = ["E402"]

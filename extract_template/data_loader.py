@@ -6,48 +6,74 @@ Returns: numpy array of images, shape (N, 3, 112, 112) in range [-1, 1]
          and pair issame labels
 """
 import os
+from pathlib import Path
 import numpy as np
 from PIL import Image
 
 
 def load_dataset_from_folder(data_root, img_folder, ann_file):
     """
-    Load all images listed in ann_file, return as numpy array (N, 3, 112, 112)
-    and the issame labels.
+    Load image pairs listed as ``0|1 image1 image2`` in an annotation file.
+
+    Image names are relative to ``img_folder``. Dataset-prefixed names such as
+    ``faces/a.jpg`` are also accepted when ``img_folder`` is ``faces``. Paths
+    must stay inside that folder. Blank lines are ignored; malformed rows are
+    errors rather than silently dropping pairs. Empty input returns empty arrays.
     """
-    ann_path = os.path.join(data_root, ann_file)
+    root = Path(data_root).resolve()
+    image_root = (root / img_folder).resolve()
+    ann_path = root / ann_file
     
     images = []
     issame_list = []
     
-    with open(ann_path, 'r') as f:
-        lines = f.read().strip().split('\n')
-    
-    for line in lines:
+    with ann_path.open('r', encoding='utf-8-sig') as f:
+        lines = f.readlines()
+
+    for line_number, line in enumerate(lines, 1):
         parts = line.strip().split()
-        if len(parts) != 3:
+        if not parts:
             continue
+        if len(parts) != 3:
+            raise ValueError(f"{ann_path}:{line_number}: expected '0|1 image1 image2'")
         label, img1_rel, img2_rel = parts
-        issame_list.append(int(label) == 1)
-        
+        if label not in {'0', '1'}:
+            raise ValueError(f"{ann_path}:{line_number}: pair label must be 0 or 1")
+
         for img_rel in [img1_rel, img2_rel]:
-            img_path = os.path.join(data_root, img_rel)
-            img = Image.open(img_path).convert('RGB')
-            img = img.resize((112, 112))
-            arr = np.array(img, dtype=np.float32)
+            relative = Path(img_rel)
+            if relative.is_absolute() or '..' in relative.parts or relative.drive:
+                raise ValueError(f"{ann_path}:{line_number}: image path must stay inside {image_root}")
+            try:
+                folder_prefix = image_root.relative_to(root)
+            except ValueError:
+                folder_prefix = None
+            if (folder_prefix and folder_prefix.parts and
+                    relative.parts[:len(folder_prefix.parts)] == folder_prefix.parts):
+                relative = Path(*relative.parts[len(folder_prefix.parts):])
+            img_path = (image_root / relative).resolve()
+            if not img_path.is_relative_to(image_root):
+                raise ValueError(f"{ann_path}:{line_number}: image path must stay inside {image_root}")
+            if not img_path.is_file():
+                raise FileNotFoundError(f"{ann_path}:{line_number}: image not found: {img_path}")
+            with Image.open(img_path) as image:
+                img = image.convert('RGB').resize((112, 112))
+                arr = np.array(img, dtype=np.float32)
             # Normalize to [-1, 1] and transpose to (C, H, W)
-            arr = (arr - 127.5) / 128.0
+            arr = (arr - 127.5) / 127.5
             arr = arr.transpose(2, 0, 1)
             images.append(arr)
+        issame_list.append(label == '1')
     
-    images = np.stack(images, axis=0)  # (N*2, 3, 112, 112)
+    images = (np.stack(images, axis=0) if images else
+              np.empty((0, 3, 112, 112), dtype=np.float32))
     issame = np.array(issame_list, dtype=bool)
     return images, issame
 
 
 def get_val_data_from_folder(data_root):
     """
-    Load all 4 datasets from the val/ subfolder.
+    Load all five datasets from the val/ subfolder.
     Returns: (lfw_data, cfp_data, agedb_data, cplfw_data, calfw_data,
                lfw_issame, cfp_issame, agedb_issame, cplfw_issame, calfw_issame)
     """
