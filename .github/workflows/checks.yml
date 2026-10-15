@@ -41,7 +41,19 @@ jobs:
           python -B -c "import torch; from modules.model import SlerpFace; print(torch.__version__)"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Audit installed dependencies
-        run: python -m pip_audit --strict --progress-spinner off
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          # Official CPU Torch builds are hosted by PyTorch, not as PyPI releases.
+          python -m pip_audit --local --vulnerability-service osv --strict --progress-spinner off
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          # Also query upstream advisories without the PEP 440 +cpu build label.
+          $torchVersion = python -B -c "from importlib.metadata import version; from packaging.version import Version; print(Version(version('torch')).public)"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $torchAudit = Join-Path $env:RUNNER_TEMP "guardface-torch-audit.txt"
+          Set-Content -LiteralPath $torchAudit -Value "torch==$torchVersion" -Encoding ascii
+          python -m pip_audit --vulnerability-service osv --strict --progress-spinner off --no-deps --disable-pip -r $torchAudit
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Lint
         run: python -m ruff check --no-cache .
       - name: Regressions
