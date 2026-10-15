@@ -21,3 +21,5 @@ temp_img*.jpg
 .env
 .env.*
 !.env.example
+report/*.pdf
+report/*.log
