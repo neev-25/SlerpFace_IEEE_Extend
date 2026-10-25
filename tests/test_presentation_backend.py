@@ -123,7 +123,7 @@ def test_missing_torch_backend_is_actionable_and_does_not_fall_back(image, monke
 
 
 def test_tensor_preprocessing_has_no_unintended_division(monkeypatch):
-    import torch
+    torch = pytest.importorskip("torch")
     import threading
     class Model:
         def __call__(self, tensor):
@@ -173,6 +173,7 @@ def test_architecture_source_is_exact_pinned_copy():
 
 
 def test_status_checks_integrity_without_running_inference(tmp_path, monkeypatch):
+    torch = pytest.importorskip("torch")
     seen = []
     def verified(path, spec):
         seen.append(spec.filename)

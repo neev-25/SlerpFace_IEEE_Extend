@@ -13,6 +13,7 @@ import threading
 import numpy as np
 
 from modules.image_input import load_rgb_image
+from modules.pose_estimation import estimate_head_pose
 
 MODEL_COMMIT = "47534e27c9851bb1128ccc0102f1145e27f23f98"
 MODEL_NAME = "OpenCV SFace (2021dec) + YuNet (2023mar)"
@@ -208,10 +209,13 @@ def extract_pretrained_face(image, model_dir=None):
     aligned_rgb = cv.cvtColor(aligned_bgr, cv.COLOR_BGR2RGB).copy()
     if aligned_rgb.shape != (112, 112, 3):
         raise FaceBackendUnavailable("The recognizer returned an unexpected aligned image size.")
+    pose = estimate_head_pose(landmarks)
+    warnings = [] if pose.is_acceptable else [pose.guidance]
     return FaceFeatures(
         vector=vector, groups=vector.reshape(-1, 16).copy(), face_box=box,
         landmarks=landmarks, detection_score=float(row[14]), model_name=MODEL_NAME,
         aligned_rgb=aligned_rgb,
         quality={"face_width_pixels": face_width, "face_height_pixels": face_height,
-                 "eye_distance_pixels": eye_distance, "detection_score": float(row[14])},
+                 "eye_distance_pixels": eye_distance, "detection_score": float(row[14]),
+                 "pose": pose.to_dict(), "warnings": warnings},
     )
