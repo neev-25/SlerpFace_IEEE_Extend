@@ -6,17 +6,15 @@ Validates PBKDF2 derivation, unit vectors, dropout masks, and revocability.
 """
 
 from pathlib import Path
-import pytest
 import numpy as np
-
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 from modules.keyless_pin import (
     create_pin_protection_context,
-    derive_pin_seed,
     evaluate_pin_unlinkability,
 )
-from verify_with_antispoof import run_pipeline, slerp_encrypt, GROUP_SIZE
+from verify_with_antispoof import run_pipeline, GROUP_SIZE
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_deterministic_pin_derivation():

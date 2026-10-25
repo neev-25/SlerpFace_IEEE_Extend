@@ -16,7 +16,6 @@ Controls:
 
 import argparse
 import sys
-import time
 from pathlib import Path
 from typing import Optional
 
@@ -27,11 +26,12 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from modules.antispoof.detector import AntiSpoofDetector
-from modules.face_backend import extract_pretrained_face, FaceInputError, FaceBackendUnavailable
-from modules.keyless_pin import create_pin_protection_context
-from modules.pose_estimation import estimate_head_pose
-from verify_with_antispoof import (
+# These imports follow the direct-script project-path bootstrap above.
+from modules.antispoof.detector import AntiSpoofDetector  # noqa: E402
+from modules.face_backend import extract_pretrained_face, FaceInputError, FaceBackendUnavailable  # noqa: E402
+from modules.keyless_pin import create_pin_protection_context  # noqa: E402
+from modules.pose_estimation import estimate_head_pose  # noqa: E402
+from verify_with_antispoof import (  # noqa: E402
     DEFAULT_DROP_RATE,
     DEFAULT_MATCH_THRESH,
     DEFAULT_SLERP_ALPHA,
@@ -52,15 +52,16 @@ def run_live_webcam(
     """
     Runs the live webcam loop or offline frame sequence.
     """
-    cap = cv2.VideoCapture(device_index)
-    if not cap.isOpened() and not headless:
+    # Offline CI/test mode must never open or read a physical camera.
+    cap = None if headless else cv2.VideoCapture(device_index)
+    if cap is not None and not cap.isOpened():
+        cap.release()
         print(f"[ERROR] Could not open webcam device index {device_index}.", file=sys.stderr)
         return {"status": "CAMERA_UNAVAILABLE", "frames_processed": 0}
 
     detector = AntiSpoofDetector(threshold=liveness_thresh, require_face=False)
     reference_template = None
     reference_vector = None
-    reference_face = None
     user_pin = pin
     frame_count = 0
     verification_history = []
@@ -75,7 +76,7 @@ def run_live_webcam(
             if max_frames is not None and frame_count >= max_frames:
                 break
 
-            ret, frame = cap.read() if cap.isOpened() else (False, None)
+            ret, frame = cap.read() if cap is not None and cap.isOpened() else (False, None)
             if not ret or frame is None:
                 if headless:
                     # Synthesize test frame for headless/test validation
@@ -141,7 +142,7 @@ def run_live_webcam(
                 if not headless:
                     cv2.putText(frame, str(exc), (20, 40),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 165, 255), 2)
-            except FaceBackendUnavailable as exc:
+            except FaceBackendUnavailable:
                 display_info["badge"] = "BACKEND_UNAVAILABLE"
                 if not headless:
                     cv2.putText(frame, "Face models unavailable. Run scripts/provision_face_models.py",
@@ -170,7 +171,6 @@ def run_live_webcam(
                                        if user_pin else create_protection_context(ref_face.groups.shape, DEFAULT_DROP_RATE))
                             reference_template = slerp_encrypt(ref_face.groups, DEFAULT_SLERP_ALPHA, DEFAULT_DROP_RATE, context=context)
                             reference_vector = ref_face.vector
-                            reference_face = ref_face
                             print(f"[ENROLLED] Reference enrolled successfully. Groups: {ref_face.groups.shape}")
                     except Exception as exc:
                         print(f"[ERROR] Enrollment failed: {exc}")
@@ -204,7 +204,8 @@ def run_live_webcam(
                     print(f"Keyless PIN updated: {'SET' if user_pin else 'CLEARED'}")
 
     finally:
-        cap.release()
+        if cap is not None:
+            cap.release()
         if not headless:
             cv2.destroyAllWindows()
 

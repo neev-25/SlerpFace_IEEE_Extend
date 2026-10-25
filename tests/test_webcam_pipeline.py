@@ -5,15 +5,13 @@ Tests for Physical Webcam Walkthrough, Calibration & Edge Scripts.
 """
 
 from pathlib import Path
-import pytest
-import numpy as np
-
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 from scripts.webcam_live_verify import run_live_webcam
 from scripts.calibrate_thresholds import compute_pairwise_similarities, generate_calibration_dataset
 from scripts.test_physical_spoofs import evaluate_physical_spoofs
 from scripts.benchmark_edge import benchmark_pipeline
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_headless_webcam_walkthrough():
@@ -21,6 +19,21 @@ def test_headless_webcam_walkthrough():
     res = run_live_webcam(device_index=-1, headless=True, max_frames=3)
     assert res["status"] == "COMPLETED"
     assert res["frames_processed"] == 3
+
+
+def test_headless_webcam_never_opens_a_camera(monkeypatch):
+    from modules.face_backend import FaceInputError
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("Offline validation attempted physical camera access")
+
+    def no_face(*args, **kwargs):
+        raise FaceInputError("Offline fixture", "NO_FACE")
+
+    monkeypatch.setattr("scripts.webcam_live_verify.cv2.VideoCapture", forbidden)
+    monkeypatch.setattr("scripts.webcam_live_verify.extract_pretrained_face", no_face)
+    result = run_live_webcam(headless=True, max_frames=1)
+    assert result["status"] == "COMPLETED" and result["frames_processed"] == 1
 
 
 def test_similarity_calibration_dataset():

@@ -226,6 +226,7 @@ async function main() {
       }
       assert.equal(await page.getByText('0.363', { exact: true }).count(), 1, 'Configured threshold is displayed with three-decimal precision');
       assert.equal(await page.getByRole('checkbox', { name: 'Use synthetic feature demo', exact: true }).count(), 1);
+      assert.equal(await page.getByRole('checkbox', { name: 'Enforce Zero-Leakage Protocol', exact: true }).count(), 1);
       assert.equal(await page.getByRole('textbox', { name: 'Trained checkpoint path (optional)', exact: true }).count(), 1);
       assert.equal(await page.getByRole('radiogroup', { name: 'Inspector input:', exact: true }).count(), 1);
       const firstTab = page.getByRole('tab').first();
@@ -323,6 +324,14 @@ async function main() {
     try {
       await page.getByText('Face backend ready:', { exact: false }).waitFor();
       assert(!(await page.getByRole('checkbox', { name: 'Use synthetic feature demo', exact: true }).isChecked()));
+      // Exercise advisory face comparison separately from the optional strict
+      // heuristic gate introduced by the dual-tier extension.
+      const strictGate = page.getByRole('checkbox', { name: 'Enforce Zero-Leakage Protocol', exact: true });
+      if (await strictGate.isChecked()) {
+        await page.getByText('Enforce Zero-Leakage Protocol', { exact: true }).click();
+        await settle(page);
+      }
+      assert(!(await strictGate.isChecked()), 'Advisory comparison mode is explicitly selected');
       await page.getByRole('tab', { name: /Pair Comparison/ }).click();
       await chooseInput(page, 'Image 1 input:', 'Upload');
       await chooseInput(page, 'Image 2 input:', 'Upload');
@@ -394,6 +403,32 @@ async function main() {
       return { sameSourceCosine, transformedCosine, differentSourceCosine, fixtureSHA256: fixtures.sha256,
         narrowLayouts,
         interpretation: 'Two public photographs plus one same-source transformation exercise real pretrained inference, uploads and session state. This is not independent identity or physical-PAD validation.' };
+    } catch (error) {
+      await screenshot(page, 'real-comparison-failure');
+      fs.writeFileSync(path.join(output, 'real-comparison-failure.txt'), await page.locator('body').innerText());
+      throw error;
+    } finally { await context.close(); }
+  });
+  await run('configured heuristic gate reports its rejected operation', async () => {
+    const fixtures = publicFaceFixtures();
+    const { page, context } = await openPage({ viewport: { width: 1440, height: 1050 } });
+    try {
+      const strictGate = page.getByRole('checkbox', { name: 'Enforce Zero-Leakage Protocol', exact: true });
+      assert(await strictGate.isChecked(), 'The configured strict policy remains enabled by default');
+      await page.getByRole('tab', { name: /Pair Comparison/ }).click();
+      await chooseInput(page, 'Image 1 input:', 'Upload');
+      await chooseInput(page, 'Image 2 input:', 'Upload');
+      for (const label of ['Upload Image 1', 'Upload Image 2']) {
+        await page.getByTestId('stFileUploader').filter({ hasText: label }).locator('input[type=file]').setInputFiles(fixtures.different);
+        await settle(page);
+      }
+      await page.getByRole('button', { name: 'Run pair comparison', exact: true }).click();
+      await page.getByText('Processing status: ZERO_LEAKAGE_TRIGGERED', { exact: true }).waitFor({ timeout: 120000 });
+      await settle(page);
+      assert.equal(await page.locator('[data-testid="stMetric"]').filter({ hasText: 'Raw descriptor cosine (diagnostic)' }).count(), 0);
+      await safeDiagnostic(page);
+      await screenshot(page, 'configured-gate-rejection');
+      return 'Configured heuristic rejection prevents a comparison result. A public photo is only a functional fixture; the test does not establish physical spoof resistance or absence of intermediate feature computation.';
     } finally { await context.close(); }
   });
   assert.equal(browserErrors.length, 0, `Browser errors: ${browserErrors.join('; ')}`);

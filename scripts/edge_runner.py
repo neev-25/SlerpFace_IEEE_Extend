@@ -17,7 +17,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from verify_with_antispoof import run_pipeline
+from verify_with_antispoof import run_pipeline  # noqa: E402 -- direct-script path bootstrap
 
 
 def main():

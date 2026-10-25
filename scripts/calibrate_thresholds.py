@@ -20,8 +20,9 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from modules.face_backend import extract_pretrained_face
-from verify_with_antispoof import cosine_similarity, DEFAULT_MATCH_THRESH
+# These imports follow the direct-script project-path bootstrap above.
+from modules.face_backend import extract_pretrained_face  # noqa: E402
+from verify_with_antispoof import cosine_similarity, DEFAULT_MATCH_THRESH  # noqa: E402
 
 
 def compute_pairwise_similarities(

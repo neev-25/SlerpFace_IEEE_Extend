@@ -8,6 +8,8 @@ The previous production-readiness, standards-compliance, inversion-resistance, a
 
 ## Setup
 
+The October 25 security refresh updates Pillow/Streamlit and three affected supporting packages together. See [the security update and validation record](docs/SECURITY_UPDATE_2026-10-25.md); use the current manifests/hash lock rather than the historical version tables in earlier audit checkpoints.
+
 Use a dedicated Python 3.11 environment. This workspace already has the tested `.venv` and verified pretrained face/presentation models. For a fresh checkout, create the environment and explicitly provision the models:
 
 ```powershell
@@ -33,7 +35,7 @@ python -B .\verify_with_antispoof.py --demo --img1 .\samples\genuine_personA_1.j
 python -B .\verify_with_antispoof.py --help
 ```
 
-For a real comparison, leave **Use synthetic feature demo** unchecked and the optional checkpoint path blank. In **Pair Comparison**, choose Upload or Camera for both inputs, supply one clear face per image, and click **Run pair comparison**. The provisioned SFace backend requires no checkpoint entry. It shows original trained cosine and an experimental label; a +/-0.03 band around the adjustable 0.363 OpenCV example threshold is labelled uncertain. This operating point is not calibrated to the user's camera or population. Transformed cosine is displayed separately and never determines the label.
+For an advisory real-face comparison, leave **Use synthetic feature demo** unchecked and the optional checkpoint path blank, and turn off **Enforce Zero-Leakage Protocol**. That optional strict heuristic policy is enabled by the dual-tier extension and can reject a photo before a comparison result; its texture score is not a validated live/spoof decision. In **Pair Comparison**, choose Upload or Camera for both inputs, supply one clear face per image, and click **Run pair comparison**. The provisioned SFace backend requires no checkpoint entry. It shows original trained cosine and an experimental label; a +/-0.03 band around the adjustable 0.363 OpenCV example threshold is labelled uncertain. This operating point is not calibrated to the user's camera or population. Transformed cosine is displayed separately and never determines the label.
 
 The inspector also shows aligned-face metadata and an optional learned presentation estimate. Those softmax values are not calibrated liveness probabilities; a still image cannot establish physical presence. Missing/multiple/small faces produce recapture guidance. Low FFT/texture scores do not declare a real photo spoofed. Results persist across unrelated reruns and invalidate when their inputs/settings change. Camera captures appear once. Images remain in memory; the old shared `temp_img1.jpg` and `temp_img2.jpg` paths are not written, and existing files are preserved.
 
