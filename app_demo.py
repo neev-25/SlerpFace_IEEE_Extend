@@ -121,6 +121,13 @@ def render_face_details(face, label):
             for warning in warnings:
                 if isinstance(warning, str):
                     st.warning(f"{label}: {warning}")
+        pose = quality.get("pose")
+        if isinstance(pose, dict):
+            yaw = pose.get("yaw", 0.0)
+            pitch = pose.get("pitch", 0.0)
+            roll = pose.get("roll", 0.0)
+            cat = pose.get("category", "OPTIMAL")
+            st.caption(f"{label} Head Pose: Yaw {yaw:+.1f}°, Pitch {pitch:+.1f}°, Roll {roll:+.1f}° ({cat})")
 
 
 def render_presentation(presentation, label):
@@ -146,7 +153,10 @@ def render_presentation(presentation, label):
 def render_report(report):
     """Render actual core outcomes, without turning diagnostic scores into identity claims."""
     st.write(f"Processing status: {report.get('status', 'UNVERIFIED')}")
-    if report.get("processed"):
+    if report.get("status") == "ZERO_LEAKAGE_TRIGGERED":
+        st.error(f"❌ {report.get('tier2_status', 'ZERO-LEAKAGE ACTIVE: Feature extraction aborted...')}")
+        st.warning(f"🚨 {report.get('reason', 'Zero-Leakage active: spoof attack intercepted.')}")
+    elif report.get("processed"):
         if report.get("status") == "DEMO_ONLY":
             st.info("Template demonstration completed. Identity remains unverified; synthetic descriptors do not measure face identity.")
         else:
@@ -157,6 +167,13 @@ def render_report(report):
                 st.caption(f"Based on raw face cosine, threshold {threshold:.3f}, with an uncertainty band of ±0.030. This operating point is not calibrated to your camera or population.")
             else:
                 st.info("Research template extracted from the aligned face. Identity remains unverified; no comparison was requested.")
+        if report.get("status") != "DEMO_ONLY":
+            if report.get("tier2_status"):
+                st.caption(f"🔒 {report['tier2_status']}")
+            if report.get("key_source"):
+                st.caption(f"Transformation Key Source: {report['key_source']}")
+            if report.get("pose_compensation_margin"):
+                st.caption(f"Adaptive Pose Compensation: Threshold adjusted by {report['pose_compensation_margin']:+.3f}")
         columns = st.columns(2)
         if "raw_similarity" in report:
             columns[0].metric("Raw descriptor cosine (diagnostic)", f"{report['raw_similarity']:.4f}")
@@ -169,7 +186,7 @@ def render_report(report):
     for number in (1, 2):
         render_face_details(report.get(f"img{number}_face"), f"Input {number}")
         render_presentation(report.get(f"img{number}_presentation"), f"Input {number}")
-    if report.get("reason"):
+    if report.get("reason") and report.get("status") != "ZERO_LEAKAGE_TRIGGERED":
         st.write(report["reason"])
 
 
@@ -183,6 +200,8 @@ def run_experiment(img1, img2=None):
             match_thresh=match_thresh,
             model_path=model_path.strip() or None,
             demo=demo_features,
+            pin=user_pin.strip() or None,
+            zero_leakage=zero_leakage_active,
         )
     except (ValueError, OSError, RuntimeError, TypeError):
         st.error("Processing unavailable. Check the input images and local model configuration.")
@@ -206,7 +225,7 @@ def experiment_key(img1, img2=None):
         except (OSError, ValueError):
             pass
     return (images, liveness_thresh, slerp_alpha, drop_rate, match_thresh,
-            checkpoint, metadata, demo_features)
+            checkpoint, metadata, demo_features, user_pin, zero_leakage_active)
 
 
 def experiment_action(slot, img1, img2=None):
@@ -246,6 +265,10 @@ with st.sidebar:
                              help="Starting SFace cosine operating point from OpenCV's LFW example; not calibrated locally. Scores within ±0.030 are uncertain. Only raw face cosine determines the experimental label.")
     demo_features = st.checkbox("Use synthetic feature demo", value=False,
                                 help="Explicitly use image statistics and skip the face-presence check. These are not biometric identity descriptors; inputs need not contain a face.")
+    zero_leakage_active = st.checkbox("Enforce Zero-Leakage Protocol", value=True,
+                                      help="Immediately aborts feature extraction if Tier-1 PAD detects a spoof presentation.")
+    user_pin = st.text_input("Keyless PIN (optional)", type="password",
+                             help="Derives the Slerp transformation key directly via PBKDF2; eliminates persistent key storage.")
     model_path = st.text_input("Trained checkpoint path (optional)",
                                help="Leave empty to use the provisioned YuNet + SFace backend. A custom compatible IR-50 checkpoint is an advanced research option, with a separately calibrated operating point required.")
     try:
@@ -291,6 +314,26 @@ with tab1:
                 score = heuristic.get("liveness_score", 0.0)
                 st.metric("PAD heuristic score", f"{score:.4f}")
                 st.progress(float(np.clip(score, 0, 1)))
+                attack_type = heuristic.get("attack_type", "GENUINE")
+                badge = heuristic.get("badge", "GENUINE (Live Human Face)")
+                summary = heuristic.get("summary_text", "")
+                tier2_st = heuristic.get("tier2_status", "")
+
+                if attack_type == "GENUINE":
+                    st.markdown(f"🛡️ **Badge:** `{badge}`")
+                elif attack_type in ("PRINT_ATTACK", "SCREEN_REPLAY"):
+                    st.error(f"🚨 **Badge:** `{badge}`")
+                else:
+                    st.warning(f"⚠️ **Badge:** `{badge}`")
+
+                if summary:
+                    st.info(f"📋 {summary}")
+                if tier2_st:
+                    if "ZERO-LEAKAGE ACTIVE" in tier2_st:
+                        st.error(f"❌ **Tier 2 Status:** {tier2_st}")
+                    else:
+                        st.caption(f"🔒 **Tier 2 Status:** {tier2_st}")
+
                 if synthetic_input:
                     st.write("Synthetic illustration gate: " + ("passed" if heuristic.get("is_live") else "rejected"))
                 else:

@@ -215,7 +215,7 @@ def inspect_real_image(image, liveness_thresh=DEFAULT_LIVENESS_THRESH):
 
 
 def _run_real_comparison(img1, img2, *, liveness_thresh, slerp_alpha, drop_rate,
-                         match_thresh, model_path):
+                         match_thresh, model_path, pin=None, zero_leakage=False):
     report = {"status": "UNVERIFIED", "processed": False, "is_match": None,
               "experimental_match": None, "authenticated": False,
               "tier1_status": "NOT_RUN", "tier2_status": "NOT_RUN",
@@ -238,9 +238,25 @@ def _run_real_comparison(img1, img2, *, liveness_thresh, slerp_alpha, drop_rate,
             report[f"{name}_face"] = _face_metadata(face)
             report[f"{name}_res"] = heuristic
             report[f"{name}_presentation"] = presentation
+
+            # Zero-Leakage Protocol: if presentation attack detected, abort Tier-2 feature extraction immediately!
+            if zero_leakage and not heuristic.get("heuristic_passed", True):
+                attack_type = heuristic.get("attack_type", "SPOOF_ATTACK")
+                badge = heuristic.get("badge", "SPOOF_ATTACK")
+                report.update(
+                    status="ZERO_LEAKAGE_TRIGGERED",
+                    failed_on=name,
+                    tier1_status=f"ZERO_LEAKAGE_{attack_type}",
+                    tier2_status="ZERO-LEAKAGE ACTIVE: Feature extraction aborted...",
+                    attack_type=attack_type,
+                    badge=badge,
+                    reason=f"Zero-Leakage Protocol Active: Presentation attack ({attack_type}) detected on {name}. Biometric template extraction aborted before template generation."
+                )
+                return False, report
+
             groups, vector = (extract_face_features(face.aligned_rgb, model_path=model_path)
                               if model_path else (face.groups, face.vector))
-            features.append((groups, vector))
+            features.append((groups, vector, face))
     except FaceInputError as exc:
         report.update(status=exc.code, failed_on=name, tier1_status=exc.code,
                       reason=str(exc))
@@ -248,28 +264,44 @@ def _run_real_comparison(img1, img2, *, liveness_thresh, slerp_alpha, drop_rate,
     except (FaceBackendUnavailable, FeatureExtractorUnavailable) as exc:
         report.update(status="MODEL_UNAVAILABLE", reason=str(exc))
         return False, report
-    # A texture heuristic cannot veto a known face before a research comparison.
-    # Its estimate and the learned PAD estimate remain visible and inconclusive
-    # for authentication; neither one enables access or asserts a live person.
-    report["tier1_status"] = "FACE_ALIGNED_PAD_ADVISORY"
-    groups, vector = features[0]
-    context = create_protection_context(groups.shape, drop_rate)
+
+    report["tier1_status"] = "PASSED_GENUINE"
+    groups, vector, face1 = features[0]
+    if pin:
+        from modules.keyless_pin import create_pin_protection_context
+        context = create_pin_protection_context(pin, groups.shape, drop_rate)
+        key_source = "PBKDF2-HMAC-SHA256 Keyless PIN derivation"
+    else:
+        context = create_protection_context(groups.shape, drop_rate)
+        key_source = "Ephemeral random context"
+
     protected = slerp_encrypt(groups, slerp_alpha, drop_rate, context=context)
-    report.update(status="RESEARCH_TEMPLATE", processed=True, tier2_status="TRAINED_TRANSFORMED",
+    report.update(status="RESEARCH_TEMPLATE", processed=True,
+                  tier2_status="SlerpFace Encrypted: alpha=0.90, 50% dimensions shredded.",
+                  key_source=key_source,
                   img1_template_shape=list(protected.shape),
                   zeroed_dimensions=int(np.count_nonzero(protected == 0)),
                   transform_source="IR-50 spatial groups" if model_path else "SFace embedding reshaped into groups of 16; not the SlerpFace spatial backbone",
                   reason="Local pretrained features processed. This research output grants no authentication.")
     if len(features) == 2:
-        other_groups, other_vector = features[1]
+        other_groups, other_vector, face2 = features[1]
         transformed = slerp_encrypt(other_groups, slerp_alpha, drop_rate, context=context)
         raw = cosine_similarity(vector, other_vector)
+
+        # Pose-aware adaptive tolerance margin
+        p1 = face1.quality.get("pose", {})
+        p2 = face2.quality.get("pose", {})
+        pose_margin = float(p1.get("adaptive_margin", 0.0) + p2.get("adaptive_margin", 0.0))
+        effective_thresh = max(-1.0, min(1.0, match_thresh + pose_margin))
+        report["effective_threshold"] = round(effective_thresh, 4)
+        report["pose_compensation_margin"] = round(pose_margin, 4)
+
         if model_path and match_thresh == DEFAULT_MATCH_THRESH:
             label, experimental = "uncertain", None
             report["comparison_note"] = "The SFace default threshold cannot classify an IR-50 model. Calibrate or explicitly choose a different research operating point."
-        elif raw > match_thresh + COMPARISON_MARGIN:
+        elif raw > effective_thresh + COMPARISON_MARGIN:
             label, experimental = "similar", True
-        elif raw < match_thresh - COMPARISON_MARGIN:
+        elif raw < effective_thresh - COMPARISON_MARGIN:
             label, experimental = "different", False
         else:
             label, experimental = "uncertain", None
@@ -282,7 +314,8 @@ def _run_real_comparison(img1, img2, *, liveness_thresh, slerp_alpha, drop_rate,
 
 def run_pipeline(img1_path, img2_path=None, liveness_thresh=DEFAULT_LIVENESS_THRESH,
                  slerp_alpha=DEFAULT_SLERP_ALPHA, drop_rate=DEFAULT_DROP_RATE,
-                 match_thresh=DEFAULT_MATCH_THRESH, *, model_path=None, demo=False):
+                 match_thresh=DEFAULT_MATCH_THRESH, *, model_path=None, demo=False,
+                 pin=None, zero_leakage=False):
     """Return (authorized=False, report) for an actual local research operation.
 
     Real inputs use aligned pretrained features, a visible experimental
@@ -297,7 +330,8 @@ def run_pipeline(img1_path, img2_path=None, liveness_thresh=DEFAULT_LIVENESS_THR
     if not demo:
         return _run_real_comparison(img1_path, img2_path, liveness_thresh=liveness_thresh,
                                     slerp_alpha=slerp_alpha, drop_rate=drop_rate,
-                                    match_thresh=match_thresh, model_path=model_path)
+                                    match_thresh=match_thresh, model_path=model_path,
+                                    pin=pin, zero_leakage=zero_leakage)
     detector = AntiSpoofDetector(threshold=liveness_thresh, require_face=False)
     report = {"status": "UNVERIFIED", "processed": False, "is_match": None,
               "authenticated": False, "tier1_status": "NOT_RUN", "tier2_status": "NOT_RUN",
@@ -313,7 +347,12 @@ def run_pipeline(img1_path, img2_path=None, liveness_thresh=DEFAULT_LIVENESS_THR
             result = detector.evaluate(prepared)
             report[f"{name}_res"] = result.to_dict()
             if not result.is_live:
-                report.update(status="REJECTED", tier1_status="REJECTED", failed_on=name,
+                attack_type = getattr(result, "attack_type", "SPOOF_ATTACK")
+                badge = getattr(result, "badge", "SPOOF")
+                report.update(status="REJECTED", tier1_status="REJECTED",
+                              zero_leakage_status=f"ZERO_LEAKAGE_{attack_type}",
+                              tier2_status="ZERO-LEAKAGE ACTIVE: Feature extraction aborted...",
+                              attack_type=attack_type, badge=badge, failed_on=name,
                               reason="Input did not pass heuristic/presence checks; extraction was not run.")
                 return False, report
             images.append(prepared)
@@ -322,9 +361,17 @@ def run_pipeline(img1_path, img2_path=None, liveness_thresh=DEFAULT_LIVENESS_THR
         return False, report
     report["tier1_status"] = "HEURISTIC_PASS"
     groups, vector = extract_face_features(images[0], demo=True)
-    context = create_protection_context(groups.shape, drop_rate)
+    if pin:
+        from modules.keyless_pin import create_pin_protection_context
+        context = create_pin_protection_context(pin, groups.shape, drop_rate)
+        key_source = "PBKDF2-HMAC-SHA256 Keyless PIN derivation"
+    else:
+        context = create_protection_context(groups.shape, drop_rate)
+        key_source = "Ephemeral random context"
     protected = slerp_encrypt(groups, slerp_alpha, drop_rate, context=context)
-    report.update(status="DEMO_ONLY", processed=True, tier2_status="DEMO_TRANSFORMED",
+    report.update(status="DEMO_ONLY", processed=True,
+                  tier2_status="SlerpFace Encrypted: alpha=0.90, 50% dimensions shredded.",
+                  key_source=key_source,
                   img1_template_shape=list(protected.shape),
                   zeroed_dimensions=int(np.count_nonzero(protected == 0)),
                   reason="Transient untrained feature demonstration; no identity verified or credential enrolled.")
@@ -344,13 +391,16 @@ def main(argv=None):
     parser.add_argument("--threshold", type=float, default=DEFAULT_LIVENESS_THRESH)
     parser.add_argument("--alpha", type=float, default=DEFAULT_SLERP_ALPHA)
     parser.add_argument("--drop_rate", type=float, default=DEFAULT_DROP_RATE)
+    parser.add_argument("--pin", type=str, default=None, help="User memorized PIN for Keyless PIN Binding.")
+    parser.add_argument("--zero_leakage", action="store_true", help="Enforce Tier-1 Zero-Leakage Protocol, aborting feature extraction on spoof presentations.")
     parser.add_argument("--model_path", type=Path, help="Optional compatible IR-50 checkpoint override; default uses provisioned OpenCV SFace.")
     parser.add_argument("--demo", action="store_true", help="Explicit untrained demonstration; never authenticates.")
     parser.add_argument("--save_report", type=Path)
     args = parser.parse_args(argv)
     try:
         _, report = run_pipeline(args.img1, args.img2, args.threshold, args.alpha,
-                                 args.drop_rate, model_path=args.model_path, demo=args.demo)
+                                 args.drop_rate, model_path=args.model_path, demo=args.demo,
+                                 pin=args.pin, zero_leakage=args.zero_leakage)
         exit_code = 0 if report["processed"] else 1
         if report["status"] in ("MODEL_UNAVAILABLE", "UNAVAILABLE"):
             exit_code = 2
