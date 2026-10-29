@@ -1,5 +1,7 @@
 # Isolated runtime, model integration, and dependency review
 
+Current dependency security refresh: [SECURITY_UPDATE_2026-10-25.md](SECURITY_UPDATE_2026-10-25.md). The version table and scan narrative below preserve the October 16 checkpoint; the current lock, inventory and audit/SBOM artifacts now reflect the October 25 patched environment.
+
 The later [functional prototype](FUNCTIONAL_PROTOTYPE.md) provisions pretrained OpenCV SFace/YuNet and MiniFASNet weights. The original `trained_checkpoint` field below concerns optional Tencent IR-50 weights; current `prototype_runtime_ready` and `--require-prototype --require-presentation` check the functional default models. Earlier counts/results remain dated checkpoints.
 
 Reviewed October 16, 2026 (Asia/Calcutta), workspace `C:\Documents\AI_Project`.

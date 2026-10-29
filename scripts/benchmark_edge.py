@@ -20,13 +20,14 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from modules.antispoof.detector import AntiSpoofDetector
-from modules.antispoof.frequency_analysis import analyze_frequency
-from modules.antispoof.texture_analysis import analyze_texture
-from modules.face_backend import extract_pretrained_face
-from modules.keyless_pin import create_pin_protection_context
-from modules.pose_estimation import estimate_head_pose
-from verify_with_antispoof import DEFAULT_DROP_RATE, DEFAULT_SLERP_ALPHA, slerp_encrypt
+# These imports follow the direct-script project-path bootstrap above.
+from modules.antispoof.detector import AntiSpoofDetector  # noqa: E402
+from modules.antispoof.frequency_analysis import analyze_frequency  # noqa: E402
+from modules.antispoof.texture_analysis import analyze_texture  # noqa: E402
+from modules.face_backend import extract_pretrained_face  # noqa: E402
+from modules.keyless_pin import create_pin_protection_context  # noqa: E402
+from modules.pose_estimation import estimate_head_pose  # noqa: E402
+from verify_with_antispoof import DEFAULT_DROP_RATE, DEFAULT_SLERP_ALPHA, slerp_encrypt  # noqa: E402
 
 
 def benchmark_pipeline(num_iterations: int = 50) -> dict:
@@ -107,18 +108,18 @@ def main():
     print(f"Benchmarking GuardFace architecture across {args.iterations} iterations...")
     report = benchmark_pipeline(args.iterations)
 
-    l = report["latencies_ms"]
+    latencies = report["latencies_ms"]
     print("\n" + "=" * 65)
     print("GUARDFACE EDGE-DEVICE LATENCY & PERFORMANCE PROFILE")
     print("=" * 65)
-    print(f"Tier-1 FFT Moiré Analysis:            {l['tier1_fft_moire']:>7.3f} ms")
-    print(f"Tier-1 LBP Texture & Color:           {l['tier1_lbp_texture']:>7.3f} ms")
-    print(f"Tier-1 Combined PAD Interception:     {l['tier1_pad_combined']:>7.3f} ms (Target < 5 ms)")
-    print(f"Facial Pose Estimation (Yaw/Pitch):   {l['pose_estimation']:>7.4f} ms")
-    print(f"YuNet Detection + SFace Extraction:   {l['yunet_detection_sface_extraction']:>7.3f} ms")
-    print(f"Keyless PIN PBKDF2 + SLERP Privacy:   {l['keyless_pin_slerp_encryption']:>7.3f} ms")
+    print(f"Tier-1 FFT Moiré Analysis:            {latencies['tier1_fft_moire']:>7.3f} ms")
+    print(f"Tier-1 LBP Texture & Color:           {latencies['tier1_lbp_texture']:>7.3f} ms")
+    print(f"Tier-1 Combined PAD Interception:     {latencies['tier1_pad_combined']:>7.3f} ms (Target < 5 ms)")
+    print(f"Facial Pose Estimation (Yaw/Pitch):   {latencies['pose_estimation']:>7.4f} ms")
+    print(f"YuNet Detection + SFace Extraction:   {latencies['yunet_detection_sface_extraction']:>7.3f} ms")
+    print(f"Keyless PIN PBKDF2 + SLERP Privacy:   {latencies['keyless_pin_slerp_encryption']:>7.3f} ms")
     print("-" * 65)
-    print(f"Total End-to-End Pipeline Latency:    {l['total_pipeline_latency']:>7.3f} ms")
+    print(f"Total End-to-End Pipeline Latency:    {latencies['total_pipeline_latency']:>7.3f} ms")
     print(f"Maximum Processing Throughput:        {report['throughput_fps']:>7.1f} FPS")
     print(f"Zero-Leakage < 5ms Target Met:        {'YES (PASSED)' if report['tier1_under_5ms_guarantee'] else 'NO'}")
     print("=" * 65)

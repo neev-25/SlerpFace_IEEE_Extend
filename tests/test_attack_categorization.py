@@ -7,12 +7,11 @@ Validates exact compliance with user specifications and Image 2 badges.
 
 from pathlib import Path
 import pytest
-import numpy as np
-
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 from modules.antispoof.detector import AntiSpoofDetector
 from verify_with_antispoof import run_pipeline
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 @pytest.fixture

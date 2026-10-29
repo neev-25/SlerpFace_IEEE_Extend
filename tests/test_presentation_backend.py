@@ -173,7 +173,7 @@ def test_architecture_source_is_exact_pinned_copy():
 
 
 def test_status_checks_integrity_without_running_inference(tmp_path, monkeypatch):
-    torch = pytest.importorskip("torch")
+    pytest.importorskip("torch")
     seen = []
     def verified(path, spec):
         seen.append(spec.filename)

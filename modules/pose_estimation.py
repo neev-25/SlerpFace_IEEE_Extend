@@ -8,7 +8,7 @@ extracted by YuNet, providing adaptive matching tolerance and recapture guidance
 """
 
 from dataclasses import asdict, dataclass
-from typing import Dict, Tuple, Union
+from typing import Dict, Union
 import numpy as np
 
 
