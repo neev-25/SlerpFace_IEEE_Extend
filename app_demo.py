@@ -79,13 +79,13 @@ def select_image(slot: str, label: str):
         img = preset_sample(slot, sample_type)
         st.caption("Synthetic illustration; it is not a captured face or liveness evidence.")
     elif mode == "Upload":
-        img = decode_capture(st.file_uploader(f"Upload Image {slot}", type=["jpg", "jpeg", "png"], key=f"up{slot}"))
+        img = decode_capture(st.file_uploader(f"Upload Image {slot}", type=["jpg", "jpeg", "png"], key=f"up{slot}", help="Maximum file size: 20MB. Accepted formats: JPG, PNG."))
     else:
         img = decode_capture(st.camera_input(f"Capture Image {slot}", key=f"cam{slot}"))
     if img is None:
         st.info("Supply an image to continue.")
     elif mode != "Camera":
-        st.image(img, caption="Selected input", width="stretch")
+        st.image(img, caption="Selected input", alt="Selected input", width="stretch")
     return img, mode == "Preset"
 
 
@@ -289,6 +289,7 @@ with st.sidebar:
 tab1, tab2, tab3 = st.tabs(["🔍 PAD & Template Inspector", "🤝 Pair Comparison", "📊 Synthetic Benchmark"])
 
 with tab1:
+    st.header("PAD and Template Inspector")
     left, right = st.columns([1, 1.2])
     with left:
         st.subheader("1. Image input")
@@ -357,14 +358,14 @@ with tab1:
                 spectrum_input = np.asarray(Image.fromarray(gray).resize((256, 256)))
                 spectrum = compute_fft_spectrum(spectrum_input)
                 normalized = ((spectrum - spectrum.min()) / (np.ptp(spectrum) + 1e-8) * 255).astype(np.uint8)
-                st.image(normalized, caption="Fourier spectrum visualization", width=200)
+                st.image(normalized, caption="Fourier spectrum visualization", alt="Fourier spectrum visualization", width=200)
             elif result is not None and result.get("reason"):
                 st.info(result["reason"])
         st.subheader("3. Template operation")
         experiment_action("inspect", inspector_img)
 
 with tab2:
-    st.subheader("Pair comparison experiment")
+    st.header("Pair Comparison Experiment")
     st.write("Supply two photos, each with exactly one clear face, then run comparison. Faces are detected and aligned before trained extraction. Presentation analysis is advisory; its score cannot establish a live person.")
     first, second = st.columns(2)
     with first:
@@ -378,7 +379,7 @@ with tab2:
     experiment_action("pair", img1, img2)
 
 with tab3:
-    st.subheader("Synthetic heuristic benchmark")
+    st.header("Synthetic Heuristic Benchmark")
     st.write("These constructed patterns test code behavior. They do not measure physical attacks, real identities, or compliance with ISO/IEC 30107-3.")
     benchmark = st.session_state.get("_benchmark_report")
     if benchmark is not None and benchmark[0] != liveness_thresh:

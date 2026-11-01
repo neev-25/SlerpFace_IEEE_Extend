@@ -1,0 +1,9 @@
+[server]
+maxUploadSize = 20
+headless = true
+address = "127.0.0.1"
+enableStaticServing = true
+
+[browser]
+gatherUsageStats = false
+
