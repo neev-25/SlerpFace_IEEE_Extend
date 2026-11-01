@@ -85,7 +85,7 @@ def select_image(slot: str, label: str):
     if img is None:
         st.info("Supply an image to continue.")
     elif mode != "Camera":
-        st.image(img, caption="Selected input", width="stretch")
+        st.image(img, caption="Selected input", width="content")
     return img, mode == "Preset"
 
 

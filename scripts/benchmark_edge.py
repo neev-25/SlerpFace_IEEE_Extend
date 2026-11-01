@@ -1,14 +1,15 @@
 """
 scripts/benchmark_edge.py
 =========================
-Latency & Edge-Device Deployment Benchmark for GuardFace.
+Local component-timing utility for GuardFace research.
 
-Measures stage-by-stage execution latency (PAD < 5ms, Pose, SFace, PIN SLERP),
-evaluating throughput and performance feasibility for direct edge-device deployment.
+Measurements on this host are not an edge-device benchmark, deployment target,
+end-to-end latency, or throughput guarantee.
 """
 
 import argparse
 import json
+import platform
 import sys
 import time
 from pathlib import Path
@@ -32,9 +33,11 @@ from verify_with_antispoof import DEFAULT_DROP_RATE, DEFAULT_SLERP_ALPHA, slerp_
 
 def benchmark_pipeline(num_iterations: int = 50) -> dict:
     """
-    Profiles average latency and standard deviation for each pipeline component.
+    Profiles local average component latency; results are not deployment guarantees.
     """
-    # Use real face fixture for accurate benchmarking
+    if type(num_iterations) is not int or num_iterations < 1:
+        raise ValueError("num_iterations must be a positive integer.")
+    # Use a fixed public fixture for repeatable local component timing.
     fixture_path = PROJECT_ROOT / "tests" / "fixtures" / "grace_hopper.jpg"
     test_crop = np.asarray(Image.open(fixture_path).resize((112, 112)), dtype=np.uint8)
     detector = AntiSpoofDetector(require_face=False)
@@ -73,7 +76,7 @@ def benchmark_pipeline(num_iterations: int = 50) -> dict:
         face = extract_pretrained_face(full_image)
     t_face_extract = (time.perf_counter() - t0) / min(num_iterations, 20) * 1000.0
 
-    # 6. Keyless PIN Derivation & SlerpFace Encryption
+    # 6. Keyless PIN derivation and research transform
     groups = face.groups
     t0 = time.perf_counter()
     for _ in range(num_iterations):
@@ -81,9 +84,12 @@ def benchmark_pipeline(num_iterations: int = 50) -> dict:
         slerp_encrypt(groups, DEFAULT_SLERP_ALPHA, DEFAULT_DROP_RATE, context=ctx)
     t_pin_slerp = (time.perf_counter() - t0) / num_iterations * 1000.0
 
-    total_latency = t_pad + t_pose + t_face_extract + t_pin_slerp
+    combined_components = t_pad + t_pose + t_face_extract + t_pin_slerp
 
     return {
+        "authentication_enabled": False,
+        "assurance": "Local timing observation on a public fixture; not a deployment guarantee.",
+        "platform": platform.platform(),
         "iterations": num_iterations,
         "latencies_ms": {
             "tier1_fft_moire": round(t_fft, 3),
@@ -91,37 +97,36 @@ def benchmark_pipeline(num_iterations: int = 50) -> dict:
             "tier1_pad_combined": round(t_pad, 3),
             "pose_estimation": round(t_pose, 4),
             "yunet_detection_sface_extraction": round(t_face_extract, 3),
-            "keyless_pin_slerp_encryption": round(t_pin_slerp, 3),
-            "total_pipeline_latency": round(total_latency, 3),
+            "keyless_pin_slerp_transform": round(t_pin_slerp, 3),
+            "combined_measured_components": round(combined_components, 3),
         },
-        "throughput_fps": round(1000.0 / total_latency, 1),
-        "tier1_under_5ms_guarantee": t_pad < 5.0,
+        "reciprocal_component_rate_per_second": round(1000.0 / combined_components, 1),
     }
 
 
 def main():
-    parser = argparse.ArgumentParser(description="GuardFace Edge Deployment Benchmark")
+    parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--iterations", type=int, default=30, help="Number of benchmark iterations")
     parser.add_argument("--save_report", type=Path, default=None, help="Save benchmark results to JSON")
     args = parser.parse_args()
 
-    print(f"Benchmarking GuardFace architecture across {args.iterations} iterations...")
+    print(f"Measuring local components across {args.iterations} iterations...")
     report = benchmark_pipeline(args.iterations)
 
     latencies = report["latencies_ms"]
     print("\n" + "=" * 65)
-    print("GUARDFACE EDGE-DEVICE LATENCY & PERFORMANCE PROFILE")
+    print("LOCAL COMPONENT TIMING OBSERVATION")
     print("=" * 65)
     print(f"Tier-1 FFT Moiré Analysis:            {latencies['tier1_fft_moire']:>7.3f} ms")
     print(f"Tier-1 LBP Texture & Color:           {latencies['tier1_lbp_texture']:>7.3f} ms")
-    print(f"Tier-1 Combined PAD Interception:     {latencies['tier1_pad_combined']:>7.3f} ms (Target < 5 ms)")
+    print(f"Tier-1 PAD heuristic:                 {latencies['tier1_pad_combined']:>7.3f} ms")
     print(f"Facial Pose Estimation (Yaw/Pitch):   {latencies['pose_estimation']:>7.4f} ms")
     print(f"YuNet Detection + SFace Extraction:   {latencies['yunet_detection_sface_extraction']:>7.3f} ms")
-    print(f"Keyless PIN PBKDF2 + SLERP Privacy:   {latencies['keyless_pin_slerp_encryption']:>7.3f} ms")
+    print(f"Keyless PIN PBKDF2 + SLERP transform: {latencies['keyless_pin_slerp_transform']:>7.3f} ms")
     print("-" * 65)
-    print(f"Total End-to-End Pipeline Latency:    {latencies['total_pipeline_latency']:>7.3f} ms")
-    print(f"Maximum Processing Throughput:        {report['throughput_fps']:>7.1f} FPS")
-    print(f"Zero-Leakage < 5ms Target Met:        {'YES (PASSED)' if report['tier1_under_5ms_guarantee'] else 'NO'}")
+    print(f"Combined measured component time:      {latencies['combined_measured_components']:>7.3f} ms")
+    print(f"Reciprocal component rate:             {report['reciprocal_component_rate_per_second']:>7.1f} /s")
+    print("Host-specific component timings; not end-to-end or deployment performance.")
     print("=" * 65)
 
     if args.save_report:

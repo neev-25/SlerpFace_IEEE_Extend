@@ -51,9 +51,9 @@ class AntiSpoofResult:
     diagnostics: dict
     summary_text: str
     authentication_eligible: bool = False
-    attack_type: str = "GENUINE"
-    badge: str = "GENUINE (Live Human Face)"
-    tier2_status: str = "SlerpFace Encrypted: alpha=0.90, 50% dimensions shredded."
+    attack_type: str = "UNVERIFIED"
+    badge: str = "UNVERIFIED"
+    tier2_status: str = "NOT_RUN"
 
     def to_dict(self):
         result = asdict(self)
@@ -97,7 +97,7 @@ class AntiSpoofDetector:
                     "Exactly one detectable face is required; extraction has not run. (unverified)",
                     attack_type=verdict,
                     badge=f"INVALID ({verdict})",
-                    tier2_status="ZERO-LEAKAGE ACTIVE: Feature extraction aborted...",
+                    tier2_status="NOT_RUN (required face check failed)",
                 )
             image = image.crop(boxes[0])
         rgb = np.asarray(image.resize(ANALYSIS_SIZE, Image.Resampling.BILINEAR))
@@ -118,13 +118,13 @@ class AntiSpoofDetector:
                 diagnostics[key] = float(texture[key])
 
         if passed:
-            attack_type = "GENUINE"
-            badge = "GENUINE (Live Human Face)"
+            attack_type = "UNVERIFIED"
+            badge = "UNVERIFIED (Heuristic Pass; Liveness Not Established)"
             summary_text = (
-                f"Passed liveness check (Score: {score:.2f} >= {self.threshold:.2f}). "
-                f"Natural 3D skin texture and regular frequency decay detected. (unverified)"
+                f"Heuristic pass only (Score: {score:.2f} >= {self.threshold:.2f}). "
+                "This static-image result does not establish a genuine person or live capture."
             )
-            tier2_status = "SlerpFace Encrypted: alpha=0.90, 50% dimensions shredded."
+            tier2_status = "NOT_RUN (heuristic analysis only)"
             risk_level = "UNVERIFIED"
         else:
             moire = diagnostics.get("moire_score", 0.0)
@@ -133,19 +133,19 @@ class AntiSpoofDetector:
             hf = diagnostics.get("high_freq_ratio", 0.0)
             if moire >= 0.70 or glare >= 0.015:
                 attack_type = "SCREEN_REPLAY"
-                badge = "SCREEN_REPLAY (Digital Monitor / Phone Screen)"
+                badge = "POSSIBLE SCREEN REPLAY (Heuristic)"
                 summary_text = (
-                    f"Spoof detected! Screen pixel grid interference / moiré pattern found "
+                    f"Possible screen-replay-like pattern; static-image heuristics are inconclusive "
                     f"(Moiré Score: {moire:.2f}, Glare: {glare * 100:.1f}%)."
                 )
             else:
                 attack_type = "PRINT_ATTACK"
-                badge = "PRINT_ATTACK (Printed Photo / Paper Replay)"
+                badge = "POSSIBLE PRINT ATTACK (Heuristic)"
                 summary_text = (
-                    f"Spoof detected! Paper printing texture / low chrominance diversity found "
+                    f"Possible print-like pattern; static-image heuristics are inconclusive "
                     f"(LBP Entropy: {entropy:.2f}, High-Freq: {hf:.2f})."
                 )
-            tier2_status = "ZERO-LEAKAGE ACTIVE: Feature extraction aborted..."
+            tier2_status = "NOT_RUN (heuristic rejection only)"
             risk_level = "REJECTED"
 
         return AntiSpoofResult(
