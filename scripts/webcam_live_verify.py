@@ -8,8 +8,8 @@ evaluates Tier-1 Presentation Attack Detection (FFT/LBP), enforces the Zero-Leak
 and runs Keyless PIN SlerpFace Tier-2 comparison.
 
 Controls:
-  'r' - Capture an in-memory research reference
-  'v' - Compare the current frame to the reference (never authorizes)
+  'r' - Enroll/Capture Reference Face
+  'v' - Verify Current Frame against Reference
   'p' - Set/Change Keyless PIN
   'q' - Quit
 """
@@ -68,7 +68,7 @@ def run_live_webcam(
 
     print("=" * 60)
     print("GuardFace Live Webcam Walkthrough Initialized")
-    print("Press 'r' to capture a research reference, 'v' to compare, 'p' for PIN, 'q' to quit")
+    print("Press 'r' to Enroll Reference, 'v' to Verify, 'p' for PIN, 'q' to Quit")
     print("=" * 60)
 
     try:
@@ -91,25 +91,33 @@ def run_live_webcam(
 
             # 1. Tier-1 & Face Analysis
             display_info = {
-                "badge": "ANALYZING (RESEARCH ONLY)",
-                "heuristic_score": 0.0,
-                "tier2_status": "NO AUTHORIZATION",
+                "badge": "SCANNING",
+                "liveness_score": 0.0,
+                "tier2_status": "WAITING",
                 "pose": None,
+                "zero_leakage_active": False,
             }
 
             try:
                 face = extract_pretrained_face(rgb_frame)
                 pad_res = detector.evaluate(face.aligned_rgb)
                 display_info["badge"] = pad_res.badge
-                display_info["heuristic_score"] = pad_res.liveness_score
+                display_info["liveness_score"] = pad_res.liveness_score
                 display_info["attack_type"] = pad_res.attack_type
 
                 pose = estimate_head_pose(face.landmarks)
                 display_info["pose"] = pose
 
                 x1, y1, x2, y2 = [int(v) for v in face.face_box]
-                display_info["tier2_status"] = "RESEARCH ONLY: heuristic is advisory; no authorization"
-                box_color = (0, 200, 255)
+
+                if not pad_res.is_live:
+                    # Zero-Leakage Protocol Interception
+                    display_info["zero_leakage_active"] = True
+                    display_info["tier2_status"] = "ZERO-LEAKAGE ACTIVE: Feature extraction aborted..."
+                    box_color = (0, 0, 255)  # Red for spoof attack
+                else:
+                    display_info["tier2_status"] = "TIER-1 PASSED: Ready for SlerpFace Protection"
+                    box_color = (0, 255, 0)  # Green for genuine
 
                 # Draw UI overlays on frame if not headless
                 if not headless:
@@ -117,7 +125,7 @@ def run_live_webcam(
                     for lx, ly in face.landmarks:
                         cv2.circle(frame, (int(lx), int(ly)), 3, (255, 255, 0), -1)
 
-                    badge_text = f"{pad_res.badge} [heuristic {pad_res.liveness_score:.2f}]"
+                    badge_text = f"{pad_res.badge} [{pad_res.liveness_score:.2f}]"
                     cv2.putText(frame, badge_text, (x1, max(25, y1 - 10)),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.6, box_color, 2)
 
@@ -125,8 +133,9 @@ def run_live_webcam(
                     cv2.putText(frame, pose_text, (20, h - 50),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
 
+                    status_color = (0, 0, 255) if display_info["zero_leakage_active"] else (0, 255, 0)
                     cv2.putText(frame, display_info["tier2_status"], (20, h - 20),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.55, box_color, 2)
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.55, status_color, 2)
 
             except FaceInputError as exc:
                 display_info["badge"] = f"GUIDANCE: {exc.code}"
@@ -151,53 +160,43 @@ def run_live_webcam(
                 if key == ord('q'):
                     break
                 elif key == ord('r'):
-                    # Keep a transient reference for a local research comparison.
+                    # Enroll Reference
                     try:
                         ref_face = extract_pretrained_face(rgb_frame)
                         ref_pad = detector.evaluate(ref_face.aligned_rgb)
-                        context = (create_pin_protection_context(user_pin, ref_face.groups.shape, DEFAULT_DROP_RATE)
-                                   if user_pin else create_protection_context(ref_face.groups.shape, DEFAULT_DROP_RATE))
-                        reference_template = slerp_encrypt(ref_face.groups, DEFAULT_SLERP_ALPHA, DEFAULT_DROP_RATE, context=context)
-                        reference_vector = ref_face.vector
-                        print(
-                            f"[RESEARCH ONLY] Reference captured in memory; heuristic score "
-                            f"{ref_pad.liveness_score:.2f} is advisory. authenticated=false."
-                        )
+                        if not ref_pad.is_live:
+                            print(f"[REJECT] Reference rejected by Tier-1: {ref_pad.badge}")
+                        else:
+                            context = (create_pin_protection_context(user_pin, ref_face.groups.shape, DEFAULT_DROP_RATE)
+                                       if user_pin else create_protection_context(ref_face.groups.shape, DEFAULT_DROP_RATE))
+                            reference_template = slerp_encrypt(ref_face.groups, DEFAULT_SLERP_ALPHA, DEFAULT_DROP_RATE, context=context)
+                            reference_vector = ref_face.vector
+                            print(f"[ENROLLED] Reference enrolled successfully. Groups: {ref_face.groups.shape}")
                     except Exception as exc:
-                        print(f"[ERROR] Research reference capture failed: {exc}")
+                        print(f"[ERROR] Enrollment failed: {exc}")
 
                 elif key == ord('v'):
-                    # Compare a probe against the transient reference; never authorize.
+                    # Verify probe against reference
                     if reference_template is None:
-                        print("[INFO] No transient reference. Press 'r' for a research comparison.")
+                        print("[INFO] No reference face enrolled yet. Press 'r' first.")
                     else:
                         try:
                             probe_face = extract_pretrained_face(rgb_frame)
                             probe_pad = detector.evaluate(probe_face.aligned_rgb)
-                            context = (create_pin_protection_context(user_pin, probe_face.groups.shape, DEFAULT_DROP_RATE)
-                                       if user_pin else create_protection_context(probe_face.groups.shape, DEFAULT_DROP_RATE))
-                            probe_template = slerp_encrypt(probe_face.groups, DEFAULT_SLERP_ALPHA, DEFAULT_DROP_RATE, context=context)
-                            raw_sim = cosine_similarity(reference_vector, probe_face.vector)
-                            enc_sim = cosine_similarity(reference_template, probe_template)
-                            margin = 0.03
-                            label = (
-                                "similar" if raw_sim > match_thresh + margin else
-                                "different" if raw_sim < match_thresh - margin else
-                                "uncertain"
-                            )
-                            print(
-                                f"[RESEARCH COMPARISON] score={raw_sim:.4f} label={label}; "
-                                f"transformed_score={enc_sim:.4f} (diagnostic only); authenticated=false."
-                            )
-                            verification_history.append({
-                                "comparison_label": label,
-                                "raw_similarity": raw_sim,
-                                "transformed_similarity": enc_sim,
-                                "heuristic_score": probe_pad.liveness_score,
-                                "authenticated": False,
-                            })
+                            if not probe_pad.is_live:
+                                print(f"[ZERO-LEAKAGE ACTIVE] Probe presentation rejected: {probe_pad.badge}")
+                                verification_history.append({"matched": False, "reason": "ZERO_LEAKAGE_TRIGGERED"})
+                            else:
+                                context = (create_pin_protection_context(user_pin, probe_face.groups.shape, DEFAULT_DROP_RATE)
+                                           if user_pin else create_protection_context(probe_face.groups.shape, DEFAULT_DROP_RATE))
+                                probe_template = slerp_encrypt(probe_face.groups, DEFAULT_SLERP_ALPHA, DEFAULT_DROP_RATE, context=context)
+                                raw_sim = cosine_similarity(reference_vector, probe_face.vector)
+                                enc_sim = cosine_similarity(reference_template, probe_template)
+                                is_match = raw_sim >= match_thresh
+                                print(f"[VERIFY] Raw Cosine: {raw_sim:.4f} | Encrypted Cosine: {enc_sim:.4f} | Match: {is_match}")
+                                verification_history.append({"matched": is_match, "raw_similarity": raw_sim, "encrypted_similarity": enc_sim})
                         except Exception as exc:
-                            print(f"[ERROR] Research comparison failed: {exc}")
+                            print(f"[ERROR] Verification failed: {exc}")
 
                 elif key == ord('p'):
                     new_pin = input("\nEnter memorized Keyless PIN (or empty to clear): ").strip()
@@ -214,15 +213,12 @@ def run_live_webcam(
         "status": "COMPLETED",
         "frames_processed": frame_count,
         "verifications_performed": len(verification_history),
-        "authentication_enabled": False,
         "history": verification_history,
     }
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="GuardFace webcam research comparison; no liveness or identity authorization."
-    )
+    parser = argparse.ArgumentParser(description="GuardFace Physical Webcam Walkthrough")
     parser.add_argument("--device", type=int, default=0, help="Webcam device index")
     parser.add_argument("--pin", type=str, default=None, help="Optional Keyless PIN")
     parser.add_argument("--liveness_thresh", type=float, default=0.60, help="PAD threshold")

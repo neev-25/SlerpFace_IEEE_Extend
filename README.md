@@ -39,8 +39,6 @@ For an advisory real-face comparison, leave **Use synthetic feature demo** unche
 
 The inspector also shows aligned-face metadata and an optional learned presentation estimate. Those softmax values are not calibrated liveness probabilities; a still image cannot establish physical presence. Missing/multiple/small faces produce recapture guidance. Low FFT/texture scores do not declare a real photo spoofed. Results persist across unrelated reruns and invalidate when their inputs/settings change. Camera captures appear once. Images remain in memory; the old shared `temp_img1.jpg` and `temp_img2.jpg` paths are not written, and existing files are preserved.
 
-The optional `scripts/webcam_live_verify.py` is an in-memory research comparison, not enrollment or verification for access. Its heuristic score is advisory, its cosine threshold is uncalibrated, and every result explicitly remains unauthenticated.
-
 `--demo` explicitly selects untrained image-statistics features and disables face-presence checks for drawings. Output is labeled `DEMO_ONLY`, `authenticated` remains false, and `is_match` remains unset. Cosine scores are diagnostic values, with no identity threshold decision. A single-image run is a transient transform demonstration; it neither enrolls nor persists a credential.
 
 Without `--demo`, the pipeline requires exactly one YuNet-detected face, aligns original pixels and extracts trained SFace features. Missing/incompatible/unverified model bytes return `MODEL_UNAVAILABLE` with setup guidance, never statistical fallback. The original `AntiSpoofDetector` Haar mode remains available to legacy heuristic experiments, but it is not the real comparison's face backend. Neither detector establishes liveness. Older shared Python environments were left unchanged.
@@ -88,8 +86,6 @@ The first command detects/aligns the face and runs the explicitly selected compa
 ## Independent evaluation and local template experiments
 
 `evaluate_dataset.py` evaluates an explicit manifest, separates calibration/test subjects and captures, selects thresholds on calibration only, and reports held-out error counts with uncertainty. CLI identity extraction defaults to the provisioned SFace backend; use `--backend ir50 --model <checkpoint>` for the original architecture. Real feature inputs are aligned consistently with the dashboard. Synthetic fixtures require `--demo`. Presentation rates from this tool are explicitly the legacy static-image heuristic, not a validation of MiniFASNet's advisory estimates. See [DATASET_VALIDATION.md](docs/DATASET_VALIDATION.md).
-
-The dedicated threshold and physical-PAD scripts also require supplied manifests; they no longer derive identity or attack results from generated/augmented portraits. Physical capture declarations are supplied by the operator and are not independently verified. The edge timing script reports host-specific component timings only—not deployment latency or throughput.
 
 `manage_templates.py` provides a separate Windows research store with user-scope DPAPI encryption, opaque IDs, atomic rotation and revocation. Its CLI deliberately enrolls only explicit untrained demonstration material and never authenticates. It stores neither raw images nor original feature vectors. See [TEMPLATE_STORE.md](docs/TEMPLATE_STORE.md) for commands, tests, same-account/backup limitations and the local-owner threat model.
 

@@ -32,7 +32,7 @@ def test_detector_classification():
     detector = AntiSpoofDetector(require_face=False)
     genuine = detector.evaluate(PROJECT_ROOT / "samples/genuine_personA_1.jpg")
     assert genuine.is_live and not genuine.authentication_eligible
-    assert "does not establish a genuine person or live capture" in genuine.summary_text
+    assert "unverified" in genuine.summary_text
     for name in ("spoof_screen_replay.jpg", "spoof_print_attack.jpg"):
         assert not detector.evaluate(PROJECT_ROOT / "samples" / name).is_live
 

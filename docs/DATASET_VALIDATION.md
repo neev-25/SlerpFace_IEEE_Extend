@@ -36,16 +36,6 @@ python -B evaluate_dataset.py --manifest C:\research\dataset\manifest.json --bac
 python -B evaluate_dataset.py --manifest C:\research\dataset\manifest.json --backend ir50 --model C:\research\compatible-ir50.pth --out C:\research\fresh-ir50-result.json
 ```
 
-The optional `scripts/calibrate_thresholds.py` and `scripts/test_physical_spoofs.py` entry points use this same manifest format. Both require caller-supplied real-data manifests and fresh output paths; neither creates or substitutes synthetic samples. Threshold calibration requires independent calibration/test identity pairs. Physical PAD reports require bona fide `camera` captures and attack records declared `physical_attack`. The operator-supplied acquisition labels are not independently verified. These scripts produce research measurements only and cannot enable authentication.
-
-```powershell
-python -B scripts/calibrate_thresholds.py --manifest C:\research\dataset\manifest.json --backend sface --save_report C:\research\threshold-report.json
-python -B scripts/test_physical_spoofs.py --manifest C:\research\pad\manifest.json --save_report C:\research\pad-report.json
-python -B scripts/benchmark_edge.py --iterations 30 --save_report C:\research\local-timing.json
-```
-
-The timing utility reports local component timings on a fixed public fixture; it is not an edge-device benchmark, end-to-end latency, or throughput guarantee.
-
 The CLI defaults to provisioned pretrained SFace. `--backend ir50` requires an explicit compatible checkpoint. Both real paths detect and align inputs consistently with the dashboard before extraction. The Python API retains `backend="ir50"` by default for backward compatibility; pass `backend="sface"` for the provisioned default model. SFace model artifact hashes/readiness are checked before and after evaluation. `--demo` requires a synthetic declaration and cannot be reported as biometric evidence. Existing reports are never overwritten. Changed checkpoint/model bytes abort report creation.
 
 Optional parameters are `--alpha`, `--drop`, `--seed`, `--target-fmr`, and `--threshold`. The first four concern numerical identity experiments; `--threshold` applies to static-image presentation heuristics. The seed is deliberately reproducible research material, never a credential key or a privacy guarantee. Input limits are 100,000 records, a 20 MiB manifest, and the shared per-image byte/pixel bounds.

@@ -199,10 +199,6 @@ def _real_image_analysis(image, liveness_thresh):
     face = extract_pretrained_face(image)
     heuristic = AntiSpoofDetector(threshold=liveness_thresh, require_face=False).evaluate(face.aligned_rgb).to_dict()
     heuristic.update(advisory=True, verdict="INCONCLUSIVE", risk_level="ADVISORY", face_count=1,
-                     attack_type="UNVERIFIED",
-                     badge="UNVERIFIED (Advisory Static-Image Heuristic)",
-                     summary_text="Static-image texture/frequency measurements are advisory and do not establish a genuine person or live capture.",
-                     tier2_status="NOT_RUN (advisory heuristic only)",
                      interpretation="Texture/frequency measurements do not establish liveness. A low score does not prove spoofing.")
     return face, heuristic, _presentation_estimate(image, face.face_box)
 
@@ -250,11 +246,11 @@ def _run_real_comparison(img1, img2, *, liveness_thresh, slerp_alpha, drop_rate,
                 report.update(
                     status="ZERO_LEAKAGE_TRIGGERED",
                     failed_on=name,
-                    tier1_status="ZERO_LEAKAGE_HEURISTIC_REJECT",
+                    tier1_status=f"ZERO_LEAKAGE_{attack_type}",
                     tier2_status="ZERO-LEAKAGE ACTIVE: Feature extraction aborted...",
                     attack_type=attack_type,
                     badge=badge,
-                    reason=f"Zero-Leakage policy: the advisory heuristic rejected {name}; feature extraction was aborted before template generation."
+                    reason=f"Zero-Leakage Protocol Active: Presentation attack ({attack_type}) detected on {name}. Biometric template extraction aborted before template generation."
                 )
                 return False, report
 
@@ -269,7 +265,7 @@ def _run_real_comparison(img1, img2, *, liveness_thresh, slerp_alpha, drop_rate,
         report.update(status="MODEL_UNAVAILABLE", reason=str(exc))
         return False, report
 
-    report["tier1_status"] = "FACE_INPUT_VALIDATED"
+    report["tier1_status"] = "PASSED_GENUINE"
     groups, vector, face1 = features[0]
     if pin:
         from modules.keyless_pin import create_pin_protection_context

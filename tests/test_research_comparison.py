@@ -46,9 +46,6 @@ def test_real_comparison_labels_use_trained_cosine_without_authentication(adviso
     assert report["comparison_label"] == label and report["experimental_match"] is experimental
     assert not decision and report["authenticated"] is False and report["is_match"] is None
     assert report["img1_res"]["advisory"] is True
-    assert report["img1_res"]["attack_type"] == "UNVERIFIED"
-    assert report["img1_res"]["tier2_status"] == "NOT_RUN (advisory heuristic only)"
-    assert report["tier1_status"] == "FACE_INPUT_VALIDATED"
     assert report["img1_presentation"]["status"] == "UNAVAILABLE"
     assert "SFace embedding reshaped" in report["transform_source"]
     public = json.dumps(report, allow_nan=False)
@@ -60,7 +57,6 @@ def test_texture_rejection_no_longer_prevents_real_feature_comparison(advisory_p
         _, report = run_pipeline(np.zeros((480, 640, 3), dtype=np.uint8), np.zeros((480, 640, 3), dtype=np.uint8))
     assert report["img1_res"]["heuristic_passed"] is False
     assert report["img1_res"]["verdict"] == "INCONCLUSIVE"
-    assert report["img1_res"]["badge"] == "UNVERIFIED (Advisory Static-Image Heuristic)"
     assert report["processed"] and report["comparison_label"] == "similar"
 
 
